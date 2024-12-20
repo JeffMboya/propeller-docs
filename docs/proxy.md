@@ -93,8 +93,8 @@ Export the required environment variables in your terminal:
 # Registry Configuration
 export PROXY_REGISTRY_URL="docker.io"
 export PROXY_AUTHENTICATE="TRUE"
-export PROXY_REGISTRY_USERNAME="username"
-export PROXY_REGISTRY_PASSWORD="password"
+export PROXY_REGISTRY_USERNAME="<your_docker_username>"
+export PROXY_REGISTRY_PASSWORD="<your_docker_password>"
 
 # MQTT Configuration
 export PROXY_PROPLET_KEY="3ff93a13-c8ff-4d17-819b-45497e0d69d7"
@@ -104,29 +104,14 @@ export PROXY_CHANNEL_ID="aca3543e-91a4-44cd-885d-751fd0a326de"
 
 ## Running the Service
 
-After exporting the environment variables, you can run the proxy service in one of two ways:
-
-### Method 1: Using Go Run
-
-```bash
-go run cmd/proxy/main.go
-```
-
-### Method 2: Installing and Running the Binary
-
-- Build and install the binary:
+After exporting the environment variables, you can run the proxy service as shown:
 
 ```bash
 make all && make install
+propeller-proxy
 ```
 
 This will install the binary in your GOBIN directory (ensure your GOBIN is configured correctly).
-
-- Run the proxy service:
-
-```bash
-propeller-proxy
-```
 
 ## Service Flow
 
