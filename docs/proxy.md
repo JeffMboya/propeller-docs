@@ -13,6 +13,8 @@ The proxy service performs two main functions:
 
 The proxy service facilitates the download of WebAssembly (WASM) containers through a multi-step process:
 
+![Proxy Service Architecture](diagrams/Proxy.png)
+
 1. **Initial Request**
    The proplet sends a download request via the MQTT topic: `channels/%s/messages/registry/proplet`
    This request is received by the proxy service's MQTT subscriber
@@ -67,23 +69,23 @@ The service is configured using environment variables.
 
 #### MQTT Configuration
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `PROXY_MQTT_ADDRESS` | URL of the MQTT broker | `tcp://localhost:1883` | Yes |
-| `PROXY_PROPLET_ID` | Unique identifier for the proplet | `""` | Yes |
-| `PROXY_CHANNEL_ID` | Channel identifier for MQTT communication | `""` | Yes |
-| `PROXY_PROPLET_KEY` | Password for MQTT authentication | `""` | Yes |
+| Variable                 | Description                           | Default                | Required                           |
+|-------------------------|---------------------------------------|------------------------|-----------------------------------|
+| `PROPLET_MQTT_ADDRESS`  | URL of the MQTT broker               | `tcp://localhost:1883` | Yes                               |
+| `PROPLET_THING_ID`      | Unique identifier for the proplet    | `""`                  | Yes                               |
+| `PROPLET_CHANNEL_ID`    | Channel identifier for MQTT          | `""`                  | Yes                               |
+| `PROPLET_THING_KEY`     | Password for MQTT authentication     | `""`                  | Yes                               |
 
 #### Registry Configuration
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `PROXY_REGISTRY_URL` | URL of the HTTP registry | `""` | Yes |
-| `PROXY_AUTHENTICATE` | Enable/disable registry authentication | `false` | No |
-| `PROXY_REGISTRY_USERNAME` | Username for registry authentication | `""` | Only if `PROXY_AUTHENTICATE=true` |
-| `PROXY_REGISTRY_PASSWORD` | Password for registry authentication | `""` | Only if `PROXY_AUTHENTICATE=true` |
-| `PROXY_REGISTRY_TOKEN` | Access token for registry authentication | `""` | Alternative to username/password |
-| `PROXY_CHUNK_SIZE` | Size of data chunks in bytes | `512000` | No |
+| Variable                 | Description                           | Default                | Required                           |
+|-------------------------|---------------------------------------|------------------------|-----------------------------------|
+| `PROXY_REGISTRY_URL`    | URL of the HTTP registry             | `""`                  | Yes                               |
+| `PROXY_AUTHENTICATE`    | Enable/disable registry auth          | `false`               | No                                |
+| `PROXY_REGISTRY_USERNAME`| Username for registry auth           | `""`                  | Only if `PROXY_AUTHENTICATE=true` |
+| `PROXY_REGISTRY_PASSWORD`| Password for registry auth           | `""`                  | Only if `PROXY_AUTHENTICATE=true` |
+| `PROXY_REGISTRY_TOKEN`  | Access token for registry auth        | `""`                  | Alternative to username/password  |
+| `PROXY_CHUNK_SIZE`      | Size of data chunks in bytes         | `512000`              | No                                |
 
 ### Example Configuration
 
@@ -91,15 +93,15 @@ Export the required environment variables in your terminal:
 
 ```bash
 # Registry Configuration
-export PROXY_REGISTRY_URL="docker.io"
+export PROXY_REGISTRY_URL="<registry_url>"
 export PROXY_AUTHENTICATE="TRUE"
 export PROXY_REGISTRY_USERNAME="<your_docker_username>"
 export PROXY_REGISTRY_PASSWORD="<your_docker_password>"
 
 # MQTT Configuration
-export PROXY_PROPLET_KEY="3ff93a13-c8ff-4d17-819b-45497e0d69d7"
-export PROXY_PROPLET_ID="df61852a-5796-415b-a675-e63fa4aa9923"
-export PROXY_CHANNEL_ID="aca3543e-91a4-44cd-885d-751fd0a326de"
+export PROPLET_THING_KEY="<secret>"
+export PROPLET_THING_ID="<proplet_id>"
+export PROPLET_CHANNEL_ID="<channel_id>"
 ```
 
 ## Running the Service
