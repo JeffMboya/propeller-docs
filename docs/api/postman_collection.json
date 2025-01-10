@@ -61,6 +61,32 @@
 					"name": "Task",
 					"item": [
 						{
+							"name": "Create Task With Image",
+							"request": {
+								"method": "POST",
+								"header": [],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"name\": \"add\",\n    \"inputs\": [\n        10,\n        20\n    ],\n    \"image_url\": \"docker.io/mrstevenyaga/add.wasm\"\n}",
+									"options": {
+										"raw": {
+											"language": "json"
+										}
+									}
+								},
+								"url": {
+									"raw": "{{MANAGER_BASE_URL}}/tasks",
+									"host": [
+										"{{MANAGER_BASE_URL}}"
+									],
+									"path": [
+										"tasks"
+									]
+								}
+							},
+							"response": []
+						},
+						{
 							"name": "Create Task",
 							"event": [
 								{
