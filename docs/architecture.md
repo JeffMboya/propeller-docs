@@ -28,7 +28,7 @@ Proplets are worker nodes that execute tasks. They receive tasks from the Manage
 
 ### Proxy
 
-The Proxy service is responsible for fetching container images from a registry and distributing them to proplets. It handles authentication with the registry and splits the container images into chunks for efficient distribution.
+The Proxy service is responsible for fetching container images from a registry and distributing them to proplets. It handles authentication with the registry and splits the container images into chunks for efficient distribution. This is for OCI registry to fetch image from OCI registry and split the image into chunks for proplets to assemble and execute.
 
 ### SuperMQ
 
