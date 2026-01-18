@@ -1,19 +1,4 @@
-# FML (Federated Machine Learning) Implementation Documentation
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Architecture](#architecture)
-3. [Component Details](#component-details)
-4. [Message Flow and MQTT Topics](#message-flow-and-mqtt-topics)
-5. [Implementation Details](#implementation-details)
-6. [Testing Guide](#testing-guide)
-7. [Expected Results](#expected-results)
-8. [Troubleshooting](#troubleshooting)
-
----
-
-## Overview
+# Federated Machine Learning
 
 The FML (Federated Machine Learning) system is implemented as a **workload-agnostic** federated learning framework built on top of Propeller's generic orchestration capabilities. The system enables distributed machine learning training across multiple edge devices (proplets) without centralizing raw data.
 
@@ -31,31 +16,66 @@ The FML (Federated Machine Learning) system is implemented as a **workload-agnos
 The FML system consists of the following components:
 
 ```
-┌─────────────┐
-│   Manager   │  ← Orchestrates tasks, forwards messages
-└──────┬──────┘
-       │
-       ├─────────────────────────────────┐
-       │                                 │
-┌──────▼──────┐                   ┌──────▼──────┐
-│  Proplet-1  │                   │  Proplet-2 │  ← Execute WASM training
-│  Proplet-3  │                   │            │
-└──────┬──────┘                   └──────┬──────┘
-       │                                 │
-       │  fl/rounds/{round_id}/updates/  │
-       └──────────────┬──────────────────┘
-                      │
-              ┌───────▼────────┐
-              │    Manager     │  ← Forwards to fml/updates
-              └───────┬────────┘
-                      │
-              ┌───────▼────────┐
-              │   Coordinator  │  ← Aggregates updates
-              └───────┬────────┘
-                      │
-              ┌───────▼────────┐
-              │  Model Server  │  ← Publishes aggregated models
-              └────────────────┘
+                         ┌──────────────────────┐
+                         │  External Trigger    │
+                         │   Test Script        │
+                         └───────────┬──────────┘
+                                     │
+                                     │ fl/rounds/start
+                                     ▼
+                         ┌──────────────────────┐
+                         │     Coordinator      │
+                         │  (FL Logic + FedAvg) │
+                         └───────────┬──────────┘
+                                     │
+                                     │ fl/rounds/start
+                                     ▼
+                                ┌──────────┐
+                                │ Manager  │
+                                │(Task     │
+                                │ Orchestrator)│
+                                └────┬─────┘
+                                     │
+                                     │ Task Start Commands
+                                     │ m/{domain}/c/{channel}/control/manager/start
+        ┌────────────────────────────┼────────────────────────────┐
+        ▼                            ▼                            ▼
+  ┌──────────┐                 ┌──────────┐                 ┌──────────┐
+  │ Proplet 1│                 │ Proplet 2│                 │ Proplet 3│
+  │ (Wasm FL)│                 │ (Wasm FL)│                 │ (Wasm FL)│
+  └────┬─────┘                 └────┬─────┘                 └────┬─────┘
+       │                            │                            │
+       │ fl/rounds/{round_id}/updates/{proplet_id}              │
+       └────────────────────────────┼────────────────────────────┘
+                                    │
+                                    ▼
+                             ┌─────────────┐
+                             │   Manager   │
+                             │  (Forwards  │
+                             │  Updates)   │
+                             └───────┬─────┘
+                                     │
+                                     │ fml/updates
+                                     ▼
+                         ┌──────────────────────┐
+                         │     Coordinator      │
+                         │ Collect + Aggregate  │
+                         └───────────┬──────────┘
+                                     │
+                                     │ fl/models/publish
+                                     ▼
+                              ┌──────────────┐
+                              │  Model Server│
+                              │  (MQTT relay)│
+                              └───────┬──────┘
+                                      │
+                                      │ fl/models/global_model_v{N}
+                                      │ (Retained Message)
+                                      ▼
+                          ┌─────────────────────────┐
+                          │        Proplets         │
+                          │    (Model Receiver)     │
+                          └─────────────────────────┘
 ```
 
 ### Component Overview
@@ -211,6 +231,159 @@ type Model struct {
 
 **Code Location**: `coordinator/main.go:208-339`
 
+##### Coordinator Aggregation Flow
+
+```
+Update Received (via fml/updates)
+         │
+         ▼
+  ┌──────────────┐
+  │ Round State  │
+  │   Exists?    │
+  └──┬────────┬──┘
+     │        │
+    Yes       No
+     │        │
+     │        ▼
+     │  ┌──────────────┐
+     │  │ Lazy Init    │
+     │  │ Round        │
+     │  │(k_of_n=3,    │
+     │  │ timeout=30)  │
+     │  └──────┬───────┘
+     │         │
+     └─────────┘
+           │
+           ▼
+     ┌─────────────┐
+     │ Add Update  │
+     │ to List     │
+     └──────┬──────┘
+            │
+            ▼
+     ┌─────────────┐
+     │ Lock Mutex  │
+     │(Thread Safe)│
+     └──────┬──────┘
+            │
+            ▼
+     ┌─────────────┐
+     │ Updates >=  │
+     │   k_of_n?   │
+     └──┬────────┬─┘
+        │        │
+       Yes      No
+        │        │
+        │        ▼
+        │  ┌─────────────┐
+        │  │ Wait for    │
+        │  │ More        │
+        │  └──────┬──────┘
+        │         │
+        │         ▼
+        │  ┌─────────────┐
+        │  │ Timeout?    │
+        │  │ Check       │
+        │  └──┬────────┬─┘
+        │     │        │
+        │   Yes       No
+        │     │        │
+        │     ▼        │
+        │ ┌─────────┐  │
+        │ │ Force   │  │
+        │ │ Aggregate│ │
+        │ └────┬────┘  │
+        │      │       │
+        └──────┴───────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ Mark Round  │
+        │ as Complete │
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ Extract All │
+        │ Updates     │
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ Init Agg    │
+        │ Model       │
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ For Each    │
+        │ Update:     │
+        │ Weight =    │
+        │ num_samples │
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ Sum Weighted│
+        │ Updates     │
+        │ aggregated_w│
+        │ += w*weight │
+        └──────┬──────┘
+               │
+               ▼
+        ┌─────────────┐
+        │ More Updates│
+        │    ?        │
+        └──┬────────┬─┘
+          Yes       No
+           │        │
+           │        ▼
+           │  ┌─────────────┐
+           │  │ Normalize   │
+           │  │ by Total    │
+           │  │ Samples     │
+           │  └──────┬──────┘
+           │         │
+           └─────────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ Increment   │
+          │ Version     │
+          └──────┬──────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ Save Model  │
+          │ to File     │
+          └──────┬──────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ Publish to  │
+          │ fl/models/  │
+          │ publish     │
+          └──────┬──────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ Publish     │
+          │ Round       │
+          │ Complete    │
+          └──────┬──────┘
+                 │
+                 ▼
+          ┌─────────────┐
+          │ Model Server│
+          │ Receives &  │
+          │ Republishes │
+          └──────┬──────┘
+                 │
+                 ▼
+        Aggregation Complete
+        Round Finished
+```
+
 #### `checkRoundTimeouts()`
 - **Purpose**: Background goroutine that checks for round timeouts
 - **Process**:
@@ -274,32 +447,315 @@ type Model struct {
 
 ### 4. Proplet Service
 
+The FL implementation differs between the Rust proplet and embedded proplet, each optimized for their respective execution environments.
+
+#### 4.1 Rust Proplet FL Implementation
+
 **Location**: `proplet/src/service.rs`
 
 **Responsibilities**:
-- WASM module execution
+- WASM module execution using Wasmtime runtime
 - Task result collection
-- FL update publication
+- FL update publication (HTTP-first with MQTT fallback)
 
 **Key Functions**:
 
-#### FL Update Detection and Publishing
+##### FL Update Detection and Publishing
 - **Detection**: Checks for `ROUND_ID` environment variable in task
 - **Process**:
   1. After WASM execution completes, captures stdout
   2. Parses stdout as JSON (expected FL update format)
   3. If valid JSON and `ROUND_ID` present:
-     - Constructs topic: `fl/rounds/{round_id}/updates/{proplet_id}`
-     - Publishes update JSON to MQTT
+     - **Primary**: Attempts HTTP POST to coordinator: `{COORDINATOR_URL}/update`
+     - **Fallback**: If HTTP fails, publishes to MQTT topic: `fl/rounds/{round_id}/updates/{proplet_id}`
   4. If JSON parsing fails, logs warning (unless task failed)
 
-**Code Location**: `proplet/src/service.rs:503-527`
+**HTTP-First Strategy**:
+- Rust proplet uses HTTP POST for direct communication with coordinator
+- Falls back to MQTT if HTTP fails (network issues, coordinator unavailable)
+- Provides better performance and lower latency when coordinator is accessible
+- MQTT fallback ensures reliability in distributed scenarios
+
+**Code Location**: `proplet/src/service.rs:595-647`
 
 **WASM Execution**:
-- Uses Wasmtime runtime (Rust proplet) or WAMR (embedded proplet)
+- Uses Wasmtime runtime (external) or wazero (embedded)
 - Executes `run()` function exported from WASM module
 - Captures stdout as task result
-- Sets environment variables from task spec
+- Sets environment variables from task spec including:
+  - `ROUND_ID`: Round identifier
+  - `MODEL_URI`: Model MQTT topic or HTTP URL
+  - `COORDINATOR_URL`: HTTP coordinator endpoint
+  - `HYPERPARAMS`: JSON-encoded hyperparameters
+
+##### Rust Proplet FL Workflow
+
+```
+Task Start Command Received
+         │
+         ▼
+  ┌──────────────┐
+  │ Check ROUND_ID│
+  │ Env Variable │
+  └──────┬───────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+ROUND_ID   No ROUND_ID
+Present         │
+    │           ▼
+    ▼    ┌─────────────┐
+┌──────────┐   │ Normal Task │
+│FL Task   │   │ Execute     │
+│Detected  │   │ and Return  │
+└────┬─────┘   └──────┬──────┘
+     │                │
+     ▼                │
+┌───────────────┐     │
+│ Execute WASM  │     │
+│ Module        │     │
+│(Wasmtime/     │     │
+│ wazero)       │     │
+└──────┬────────┘     │
+       │              │
+       ▼              │
+┌───────────────┐     │
+│Capture stdout │     │
+│Parse as JSON  │     │
+└──────┬────────┘     │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ Valid JSON?  │      │
+└──┬─────────┬─┘      │
+   │         │        │
+  Yes       No        │
+   │         │        │
+   ▼         ▼        │
+Extract    Log        │
+round_id   Warning    │
+   │         │        │
+   ▼         │        │
+┌─────────────┐       │
+│ Try HTTP    │       │
+│ POST to     │       │
+│ Coordinator │       │
+└──┬────────┬─┘       │
+   │        │         │
+Success  Failure      │
+   │        │         │
+   ▼        ▼         │
+┌─────┐ ┌──────────┐  │
+│HTTP │ │ Fallback │  │
+│✓    │ │ Publish  │  │
+└──┬──┘ │to MQTT   │  │
+    │   └────┬─────┘  │
+    │        │        │
+    │        ▼        │
+    │   ┌──────────┐  │
+    │   │MQTT ✓    │  │
+    │   └────┬─────┘  │
+    └───────┴─────────┘
+            │
+            ▼
+      Task Complete
+```
+
+#### 4.2 Embedded Proplet FL Implementation
+
+**Location**: `embed-proplet/src/mqtt_client.c` and `embed-proplet/src/wasm_handler.c`
+
+**Responsibilities**:
+- WASM module execution using WAMR (WebAssembly Micro Runtime)
+- FL task detection and data fetching
+- Host function registration for WASM modules
+- FL update publication via MQTT
+
+**Key Functions**:
+
+##### FL Task Detection and Workflow
+- **Detection**: Checks for `ROUND_ID` environment variable in task start command
+- **Process**:
+  1. **Task Detection**: Proplet detects FL task via `ROUND_ID` environment variable
+  2. **PROPLET_ID Setup**: Sets `PROPLET_ID` from `config.client_id` (Manager-known identity)
+  3. **Model Fetching**: Fetches model from Model Registry via HTTP GET
+     - URL: `{MODEL_REGISTRY_URL}/models/{version}`
+     - Stores result in `g_current_task.model_data`
+     - Falls back to MQTT subscription if HTTP fails
+  4. **Dataset Fetching**: Fetches dataset from Local Data Store via HTTP GET
+     - URL: `{DATA_STORE_URL}/datasets/{proplet_id}`
+     - Stores result in `g_current_task.dataset_data`
+  5. **WASM Execution**: Executes WASM module with host functions registered
+  6. **Host Function Calls**: WASM module calls host functions to get:
+     - `PROPLET_ID` via `get_proplet_id()`
+     - `MODEL_DATA` via `get_model_data()`
+     - `DATASET_DATA` via `get_dataset_data()`
+  7. **Training**: WASM module performs local training and outputs JSON update to stdout
+  8. **Update Submission**: Proplet captures stdout, parses JSON, and publishes to MQTT:
+     - Topic: `fl/rounds/{round_id}/updates/{proplet_id}`
+     - Message: JSON update with `round_id`, `proplet_id`, `update`, `metrics`, etc.
+
+**Host Functions**:
+The embedded proplet provides three host functions for WASM modules:
+
+1. **`get_proplet_id(ret_offset *i32, ret_len *i32) -> i32`**
+   - Returns PROPLET_ID as string in WASM linear memory
+   - Used by WASM module to identify itself in FL updates
+
+2. **`get_model_data(ret_offset *i32, ret_len *i32) -> i32`**
+   - Returns MODEL_DATA JSON string in WASM linear memory
+   - Contains global model weights fetched from Model Registry
+
+3. **`get_dataset_data(ret_offset *i32, ret_len *i32) -> i32`**
+   - Returns DATASET_DATA JSON string in WASM linear memory
+   - Contains local dataset fetched from Data Store
+
+**Environment Variable Fallback**:
+For compatibility with TinyGo/WASI, the embedded proplet also sets these as environment variables:
+- `PROPLET_ID`: Set from `config.client_id`
+- `MODEL_DATA`: Set from fetched model JSON
+- `DATASET_DATA`: Set from fetched dataset JSON
+
+**Code Locations**:
+- FL task detection: `embed-proplet/src/mqtt_client.c:535-771`
+- Model/dataset fetching: `embed-proplet/src/mqtt_client.c:801-893`
+- Update publication: `embed-proplet/src/mqtt_client.c:1301-1403`
+- Host function registration: `embed-proplet/src/wasm_handler.c`
+
+**WASM Execution**:
+- Uses WAMR runtime (compiled into Zephyr firmware)
+- Supports both interpreter mode and AOT compilation
+- Executes exported `run()` function from WASM module
+- Captures stdout for update extraction
+- Memory-constrained environment (40 KB heap pool)
+
+##### Embedded Proplet FL Workflow
+
+```
+Task Start Command Received (via MQTT)
+         │
+         ▼
+  ┌──────────────┐
+  │ Check ROUND_ID│
+  │ Env Variable │
+  └──────┬───────┘
+         │
+    ┌────┴────┐
+    │         │
+    ▼         ▼
+ROUND_ID   No ROUND_ID
+Present         │
+    │           ▼
+    ▼      ┌──────────────┐
+┌──────────┐   │ Normal Task │
+│FL Task   │   │ Execute     │
+│Detected  │   │ WASM Only   │
+└────┬─────┘   └──────┬──────┘
+     │                │
+     ▼                │
+┌──────────────┐      │
+│ Set PROPLET_ID│     │
+│from config   │      │
+└──────┬───────┘      │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ Fetch Model  │      │
+│from Registry │      │
+│HTTP GET      │      │
+└──┬─────────┬─┘      │
+   │         │        │
+Success  Failure      │
+   │         │        │
+   ▼         ▼        │
+Store     MQTT        │
+Model     Fallback    │
+   │         │        │
+   └────┬────┘        │
+        │             │
+        ▼             │
+┌──────────────┐      │
+│Fetch Dataset │      │
+│from Data Store│     │
+│HTTP GET      │      │
+└──┬─────────┬─┘      │
+   │         │        │
+Success  Failure      │
+   │         │        │
+   ▼         ▼        │
+Store     Synthetic   │
+Dataset   Data        │
+   │         │        │
+   └────┬────┘        │
+        │             │
+        ▼             │
+┌─────────────────┐   │
+│ Register Host   │   │
+│ Functions:      │   │
+│ - get_proplet_id│   │
+│ - get_model_data│   │
+│ - get_dataset_  │   │
+│   data          │   │
+└──────┬──────────┘   │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ Execute WASM │      │
+│ Module (WAMR)│      │
+└──────┬───────┘      │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ WASM Calls   │      │
+│ Host Functions│     │
+└──────┬───────┘      │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│Local Training│      │
+│Generate Update│     │
+└──────┬───────┘      │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ Output JSON  │      │
+│ Update       │      │
+│to stdout     │      │
+└──────┬───────┘      │
+       │              │
+       ▼              │
+┌──────────────┐      │
+│ Capture      │      │
+│ Parse JSON   │      │
+└──┬─────────┬─┘      │
+   │         │        │
+  Yes       No        │
+   │         │        │
+   ▼         ▼        │
+Publish    Log        │
+to MQTT    Error      │
+   │         │        │
+   ▼         │        │
+┌──────────┐ │        │
+│MQTT ✓    │ │        │
+└────┬─────┘ │        │
+     └───────┴────────┘
+            │
+            ▼
+      Task Complete
+```
+
+##### Differences from Rust Proplet
+
+| Feature | Rust Proplet | Embedded Proplet |
+|---------|--------------|------------------|
+| **Update Submission** | HTTP POST (primary), MQTT (fallback) | MQTT only |
+| **Data Access** | Environment variables | Host functions + env vars |
+| **Model Fetching** | WASM handles via MQTT/HTTP | Proplet fetches before execution |
+| **Dataset Fetching** | WASM handles | Proplet fetches before execution |
+| **Runtime** | Wasmtime (external) or wazero | WAMR (embedded in Zephyr) |
+| **Memory Constraints** | Host system resources | 40 KB heap pool |
 
 ### 5. Client WASM Module
 
@@ -521,12 +977,27 @@ GOOS=wasip1 GOARCH=wasm go build -o fl-client.wasm fl-client.go
 
 ## Testing Guide
 
+This section covers testing FML with both Rust proplet and embedded proplet implementations.
+
 ### Prerequisites
+
+#### For Rust Proplet FL Demo
 
 1. **Docker and Docker Compose** installed
 2. **Go 1.21+** (for building WASM client)
 3. **Python 3** with `requests` library
-4. All services on `fl-demo` Docker network
+4. All services on `fl-demo-http` Docker network
+
+#### For Embedded Proplet FL Demo
+
+1. **TinyGo** installed (for WASM compilation targeting WAMR)
+2. **Go 1.21+**
+3. **Zephyr RTOS** development environment (for building embedded proplet)
+4. **ESP32-S3** development board or QEMU emulator
+
+## Rust Proplet FL Demo
+
+This section demonstrates running FML with Rust proplets using the HTTP-based coordinator.
 
 ### Step 1: Build WASM Client
 
@@ -578,7 +1049,7 @@ EOF
 
 ```bash
 cd /home/jeff-mboya/Documents/propeller/examples/fl-demo
-docker compose up -d
+docker compose -f compose-http.yaml up -d
 ```
 
 **Expected Output**:
@@ -1355,3 +1826,299 @@ Modify test script to require fewer updates:
 ```
 
 **Note**: Coordinator defaults to `k_of_n=3` if not specified.
+
+---
+
+## Embedded Proplet FL Demo
+
+This section demonstrates running FML with embedded proplets using WAMR runtime on Zephyr-based devices (e.g., ESP32-S3).
+
+### Overview
+
+The embedded proplet FL demo uses:
+- **WAMR Runtime**: WebAssembly Micro Runtime compiled into Zephyr firmware
+- **Host Functions**: Three host functions (`get_proplet_id`, `get_model_data`, `get_dataset_data`) for WASM modules
+- **MQTT-Based Updates**: Updates published directly to MQTT (no HTTP fallback)
+- **TinyGo Compilation**: WASM modules built with TinyGo targeting WAMR/WASI
+
+### Step 1: Build Embedded FL Client WASM
+
+```bash
+cd /home/jeff-mboya/Documents/propeller/examples/fl-embedded
+
+# Build WASM module using TinyGo (targeting WAMR/WASI)
+tinygo build -target=wasi -o fl-client.wasm fl-client.go
+```
+
+**Expected Output**:
+```
+# No errors, fl-client.wasm file created
+```
+
+**Verification**:
+```bash
+ls -lh fl-client.wasm
+# Should show file size ~100-200 KB (TinyGo produces smaller binaries than standard Go)
+```
+
+### Step 2: Base64 Encode WASM Module
+
+The Manager requires base64-encoded WASM modules when creating tasks:
+
+```bash
+# Encode the WASM file
+base64 -i fl-client.wasm -o fl-client.wasm.b64
+
+# Or on macOS
+base64 -i fl-client.wasm > fl-client.wasm.b64
+
+# View encoded length (should be reasonable for MQTT transmission)
+wc -c fl-client.wasm.b64
+```
+
+### Step 3: Prepare Task Configuration
+
+Create a task JSON with FL-specific environment variables:
+
+```json
+{
+  "id": "fl-task-embedded-1",
+  "name": "fl-client-embedded",
+  "file": "<base64-encoded-wasm-from-step-2>",
+  "env": {
+    "ROUND_ID": "round-1",
+    "MODEL_URI": "fl/models/global_model_v0",
+    "COORDINATOR_URL": "http://coordinator-http:8080",
+    "MODEL_REGISTRY_URL": "http://model-registry:8081",
+    "DATA_STORE_URL": "http://local-data-store:8083",
+    "HYPERPARAMS": "{\"epochs\":1,\"lr\":0.01,\"batch_size\":16}"
+  },
+  "proplet_id": "embedded-proplet-1"
+}
+```
+
+### Step 4: Start FL Infrastructure Services
+
+Ensure the FL infrastructure is running (same as Rust proplet demo):
+
+```bash
+cd /home/jeff-mboya/Documents/propeller/examples/fl-demo
+docker compose -f compose-http.yaml up -d
+```
+
+Required services:
+- MQTT broker
+- Manager
+- Coordinator (HTTP)
+- Model Registry
+- Local Data Store
+
+### Step 5: Create Task via Manager API
+
+```bash
+# Replace <base64-wasm> with the content of fl-client.wasm.b64
+curl -X POST http://localhost:7070/tasks \
+  -H "Content-Type: application/json" \
+  -d @task-config.json
+```
+
+Or create task programmatically using Python:
+
+```python
+import json
+import base64
+import requests
+
+MANAGER_URL = "http://localhost:7070"
+
+# Read and encode WASM file
+with open("fl-client.wasm", "rb") as f:
+    wasm_b64 = base64.b64encode(f.read()).decode('utf-8')
+
+task_data = {
+    "id": "fl-task-embedded-1",
+    "name": "fl-client-embedded",
+    "file": wasm_b64,
+    "env": {
+        "ROUND_ID": "round-1",
+        "MODEL_URI": "fl/models/global_model_v0",
+        "COORDINATOR_URL": "http://coordinator-http:8080",
+        "MODEL_REGISTRY_URL": "http://model-registry:8081",
+        "DATA_STORE_URL": "http://local-data-store:8083",
+        "HYPERPARAMS": json.dumps({"epochs": 1, "lr": 0.01, "batch_size": 16})
+    }
+}
+
+response = requests.post(f"{MANAGER_URL}/tasks", json=task_data)
+print(response.json())
+```
+
+### Step 6: Start Task on Embedded Proplet
+
+```bash
+curl -X POST http://localhost:7070/tasks/fl-task-embedded-1/start
+```
+
+### Step 7: Monitor Embedded Proplet Execution
+
+#### Embedded Proplet Logs
+
+The embedded proplet will log:
+
+```
+[INFO] FML task detected: ROUND_ID=round-1
+[INFO] Fetching model from registry: http://model-registry:8081/models/0
+[INFO] Successfully fetched model v0 via HTTP and stored in MODEL_DATA
+[INFO] Fetching dataset for proplet_id=embedded-proplet-1 from: http://local-data-store:8083/datasets/embedded-proplet-1
+[INFO] Successfully fetched dataset via HTTP and stored in DATASET_DATA
+[INFO] WASM execution started
+[INFO] WASM module completed, capturing stdout
+[INFO] Publishing FML update to fl/rounds/round-1/updates/embedded-proplet-1
+[INFO] Successfully published FL update to MQTT
+```
+
+#### Monitor MQTT Topics
+
+Subscribe to FL update topics:
+
+```bash
+# Monitor updates from embedded proplet
+mosquitto_sub -h localhost -t "fl/rounds/round-1/updates/embedded-proplet-1" -v
+
+# Monitor all FL updates
+mosquitto_sub -h localhost -t "fl/rounds/+/updates/+" -v
+```
+
+**Expected MQTT Message**:
+```json
+{
+  "round_id": "round-1",
+  "proplet_id": "embedded-proplet-1",
+  "base_model_uri": "fl/models/global_model_v0",
+  "num_samples": 512,
+  "metrics": {
+    "loss": 0.75
+  },
+  "update": {
+    "w": [0.1, 0.2, 0.3],
+    "b": 0.05
+  }
+}
+```
+
+### Step 8: Verify Coordinator Receives Updates
+
+Check coordinator logs:
+
+```bash
+docker compose -f compose-http.yaml logs -f coordinator-http
+```
+
+**Expected Logs**:
+```
+INFO Received update round_id=round-1 proplet_id=embedded-proplet-1 total_updates=1 k_of_n=3
+INFO Aggregating updates round_id=round-1 num_updates=1
+INFO Aggregated model saved version=1
+```
+
+### Expected Results for Embedded Proplet FL Demo
+
+#### Successful Execution Flow
+
+1. **Task Creation**: Manager creates task with `ROUND_ID` environment variable
+2. **Task Start**: Embedded proplet receives start command via MQTT
+3. **FL Detection**: Proplet detects FL task via `ROUND_ID`
+4. **Data Fetching**:
+   - Model fetched from Model Registry via HTTP GET
+   - Dataset fetched from Local Data Store via HTTP GET
+   - Data stored in `g_current_task.model_data` and `g_current_task.dataset_data`
+5. **WASM Execution**:
+   - WASM module loaded into WAMR runtime
+   - Host functions registered (`get_proplet_id`, `get_model_data`, `get_dataset_data`)
+   - WASM module calls host functions to retrieve data
+   - Local training performed within WASM module
+   - JSON update output to stdout
+6. **Update Publication**:
+   - Proplet captures stdout (JSON update)
+   - Proplet parses JSON and validates structure
+   - Proplet publishes to MQTT: `fl/rounds/{round_id}/updates/{proplet_id}`
+7. **Aggregation**: Coordinator receives update and aggregates when `k_of_n` threshold reached
+
+#### Expected Proplet Log Messages
+
+```
+[INFO] Received start command for task fl-task-embedded-1
+[INFO] FML task detected: ROUND_ID=round-1
+[INFO] Setting PROPLET_ID=embedded-proplet-1 from config
+[INFO] Fetching model from registry: http://model-registry:8081/models/0
+[INFO] Model fetch successful: 123 bytes
+[INFO] Fetching dataset from data store: http://local-data-store:8083/datasets/embedded-proplet-1
+[INFO] Dataset fetch successful: 456 bytes
+[INFO] Executing WASM module with host functions
+[INFO] WASM execution completed successfully
+[INFO] Captured stdout: {"round_id":"round-1","proplet_id":"embedded-proplet-1",...}
+[INFO] Published FML update to fl/rounds/round-1/updates/embedded-proplet-1
+```
+
+#### Key Differences from Rust Proplet Demo
+
+| Aspect | Rust Proplet | Embedded Proplet |
+|--------|--------------|------------------|
+| **Update Submission** | HTTP POST first, MQTT fallback | MQTT only |
+| **WASM Compilation** | Standard Go (`GOOS=wasip1`) | TinyGo (`tinygo build -target=wasi`) |
+| **WASM Size** | ~4-5 MB | ~100-200 KB |
+| **Data Access** | Environment variables | Host functions + env vars |
+| **Runtime** | Wasmtime (external process) | WAMR (embedded in Zephyr) |
+| **Model/Dataset Fetch** | Handled by WASM module | Fetched by proplet before execution |
+
+### Troubleshooting Embedded Proplet FL Demo
+
+#### Host Functions Not Available
+
+**Symptoms**:
+- WASM module logs indicate host functions not found
+- `get_proplet_id()` returns 0 (failure)
+
+**Solution**:
+1. Verify embedded proplet built with latest `wasm_handler.c`
+2. Check host function registration in WAMR initialization
+3. Verify native symbols registered: `wasm_runtime_register_natives()`
+4. Example code falls back to `os.Getenv()` for compatibility
+
+#### Model/Dataset Not Fetched
+
+**Symptoms**:
+- Proplet logs show HTTP fetch errors
+- `MODEL_DATA` or `DATASET_DATA` empty in WASM module
+
+**Solution**:
+1. Check HTTP connectivity from embedded proplet to services
+2. Verify URLs in environment variables are correct
+3. Check proplet logs for HTTP errors: `[ERR] Failed to fetch model: ...`
+4. Verify Model Registry and Data Store are accessible
+5. Example code uses synthetic data as fallback if fetch fails
+
+#### Update Not Published to MQTT
+
+**Symptoms**:
+- Proplet execution completes but no MQTT message
+- Coordinator doesn't receive update
+
+**Solution**:
+1. Check MQTT connection status in proplet logs
+2. Verify `ROUND_ID` is set correctly in task environment
+3. Ensure WASM module outputs valid JSON to stdout
+4. Check proplet logs for MQTT publish errors
+5. Verify MQTT topic format: `fl/rounds/{round_id}/updates/{proplet_id}`
+
+#### WASM Module Fails to Load
+
+**Symptoms**:
+- Proplet logs show WAMR initialization errors
+- Task fails with WASM-related errors
+
+**Solution**:
+1. Verify WASM module compiled with TinyGo targeting `wasi`
+2. Check WASM file is valid: `file fl-client.wasm` should show WebAssembly
+3. Verify WAMR runtime supports required WASI features
+4. Check embedded proplet has sufficient memory (40 KB heap pool)
