@@ -1,22 +1,61 @@
-# Federated Machine Learning
+# Federated Machine Learning in Propeller
 
-The FML (Federated Machine Learning) system is implemented as a **workload-agnostic** federated learning framework built on top of Propeller's generic orchestration capabilities. The system enables distributed machine learning training across multiple edge devices (proplets) without centralizing raw data.
+Propeller implements Federated Machine Learning (FML) as a workload-agnostic federated learning framework that enables distributed machine learning training across multiple edge devices without centralizing raw data. This document explains the architecture of Propeller's FML system and how the components interact.
 
-## Key Design Principles
+## Motivation for Federated Learning
 
-1. **Manager is Workload-Agnostic**: The Manager service has no FL-specific logic. It simply orchestrates task distribution and forwards messages.
-2. **External Coordinator**: FL-specific logic (aggregation, round management, model versioning) is handled by an external FML Coordinator service.
-3. **MQTT-Based Communication**: All components communicate via SuperMQ MQTT topics for asynchronous, scalable message passing.
-4. **WASM-Based Training**: Training workloads are executed as WebAssembly modules for portability and security.
+Federated learning addresses several critical challenges in distributed machine learning:
 
-## Architecture
+### Data Locality and Privacy
 
-The FML system consists of the following components:
+Traditional centralized machine learning requires moving raw data from edge devices to a central server for training. This approach has significant drawbacks:
 
-```markdown
+- **Privacy Concerns**: Sensitive data (medical records, personal information, proprietary sensor data) must leave the device, creating privacy risks and regulatory compliance challenges.
+- **Data Sovereignty**: Organizations may be legally or contractually prohibited from moving data off-premises or across geographic boundaries.
+- **Bandwidth Constraints**: Transferring large datasets from edge devices to the cloud consumes significant network bandwidth and may be impractical in bandwidth-constrained environments.
+
+Federated learning solves these problems by keeping raw data on the device. Only model updates (weight gradients or deltas) are transmitted, not the underlying training data. This preserves privacy while enabling collaborative model improvement.
+
+### Distributed Assets and Edge Computing
+
+Modern IoT and edge computing deployments involve thousands or millions of devices distributed across diverse locations:
+
+- **Geographic Distribution**: Devices may be spread across multiple sites, cities, or countries, making centralized data collection impractical.
+- **Resource Constraints**: Edge devices often have limited storage, compute, and network capabilities, making them unsuitable for large-scale centralized training.
+- **Real-time Requirements**: Many applications require models that adapt to local conditions in real-time, which is difficult to achieve with centralized training.
+
+Federated learning leverages the distributed nature of edge deployments by training models locally on each device, then aggregating the learned knowledge without moving raw data.
+
+### Scalability and Efficiency
+
+Federated learning provides natural scalability advantages:
+
+- **Parallel Training**: Multiple devices train simultaneously, reducing overall training time compared to sequential centralized training.
+- **Reduced Server Load**: The central coordinator only aggregates updates, not raw data, significantly reducing computational and storage requirements.
+- **Incremental Learning**: New devices can join the federation without retraining from scratch, and models can be updated incrementally as new data becomes available.
+
+## Propeller's FML system Architecture
+
+Propeller's FML system is built on a workload-agnostic design where the core orchestration layer (Manager) has no FL-specific logic. Instead, FL-specific functionality is handled by an external Coordinator service that manages rounds, aggregation, and model versioning. This separation of concerns allows Propeller to support federated learning while remaining flexible enough to orchestrate other types of distributed workloads.
+
+### Core Design Principles
+
+1. **Workload-Agnostic Manager**: The Manager service orchestrates task distribution and message forwarding without understanding FL semantics. It treats FL tasks like any other workload, creating tasks and forwarding messages verbatim.
+
+2. **External Coordinator**: FL-specific logic (round management, aggregation algorithms, model versioning) is implemented in a separate Coordinator service that can be developed, deployed, and scaled independently.
+
+3. **MQTT-Based Communication**: All components communicate via SuperMQ MQTT topics, providing asynchronous, scalable message passing that works across diverse network conditions and device types.
+
+4. **WASM-Based Training**: Training workloads execute as WebAssembly modules, providing portability, security isolation, and consistent execution across different device architectures.
+
+### System Architecture Overview
+
+The following diagram illustrates the high-level architecture and message flow of Propeller's federated learning system:
+
+```text
                          ┌──────────────────────┐
                          │  External Trigger    │
-                         │   Test Script        │
+                         │   (API/Script)        │
                          └───────────┬──────────┘
                                      │
                                      │ fl/rounds/start
@@ -63,8 +102,9 @@ The FML system consists of the following components:
                                      │ fl/models/publish
                                      ▼
                               ┌──────────────┐
-                              │  Model Server│
-                              │  (MQTT relay)│
+                              │ Model Registry│
+                              │  (Storage &   │
+                              │ Distribution) │
                               └───────┬──────┘
                                       │
                                       │ fl/models/global_model_v{N}
@@ -76,352 +116,115 @@ The FML system consists of the following components:
                           └─────────────────────────┘
 ```
 
-### Component Overview
+## System Components
 
-1. **SuperMQ MQTT Adapter**: Central message bus for all MQTT communication
-2. **Manager**: Task orchestration and message forwarding
-3. **FML Coordinator**: FL round management and aggregation
-4. **Model Server**: Model storage and distribution
-5. **Proplets**: WASM execution environments (Rust or embedded)
-6. **Client WASM**: Training workload module
-
-## Component Details
+The FML system consists of the following components that work together to enable federated learning:
 
 ### Manager Service
 
+The Manager is Propeller's core orchestration component. In the context of federated learning, it acts as a workload-agnostic task distributor and message forwarder.
+
 **Responsibilities**:
 
-- Task creation and lifecycle management
-- Proplet selection and task distribution
-- MQTT message forwarding (workload-agnostic)
+- **Task Creation and Distribution**: When a federated learning round starts, the Manager receives a round start message and creates training tasks for each participating proplet (edge device). Each task is configured with the necessary environment variables (round ID, model URI, hyperparameters) and pinned to a specific proplet.
 
-**Key Functions**:
+- **Message Forwarding**: The Manager subscribes to FL update topics and forwards update messages verbatim to the Coordinator. It does not inspect, validate, or modify the update payload, maintaining its workload-agnostic design.
 
-#### Round Start Handling
+- **Proplet Management**: The Manager maintains awareness of available proplets and their health status, ensuring tasks are only created for active, reachable devices.
 
-- **Subscribes to**: `fl/rounds/start`
-- **Purpose**: Listens for FL round start messages and launches tasks for each participant
-- **Process**:
-  1. Parses round start message containing:
-     - `round_id`: Unique identifier for the round
-     - `model_uri`: MQTT topic for the base model (e.g., `fl/models/global_model_v0`)
-     - `task_wasm_image`: OCI image reference for WASM module (optional, can use `file` field)
-     - `participants`: List of proplet IDs to participate
-     - `hyperparams`: Training hyperparameters (epochs, lr, batch_size)
-     - `k_of_n`: Minimum number of updates required for aggregation
-     - `timeout_s`: Round timeout in seconds
-  2. Validates each participant (checks if proplet exists and is alive)
-  3. Creates a task for each participant with:
-     - Environment variables: `ROUND_ID`, `MODEL_URI`, `HYPERPARAMS`
-     - Task name: `fl-round-{round_id}-{proplet_id}`
-     - Pinned to specific proplet
-  4. Starts each task immediately after creation
-
-#### Update Forwarding
-
-- **Subscribes to**: `fl/rounds/+/updates/+` (wildcard pattern)
-- **Purpose**: Forwards FL update messages verbatim to the FML coordinator
-- **Process**:
-  1. Extracts `round_id` and `proplet_id` from topic: `fl/rounds/{round_id}/updates/{proplet_id}`
-  2. Adds metadata: `forwarded_at` timestamp
-  3. Publishes to: `fml/updates` topic
-  4. Does NOT inspect, validate, or modify the update payload
-
-**Key Design**: Manager remains completely workload-agnostic. It doesn't understand FL semantics, only forwards messages.
+**Key Design**: The Manager remains completely workload-agnostic. It doesn't understand federated learning semantics, model structures, or aggregation logic. This separation allows the same Manager to orchestrate other types of distributed workloads beyond federated learning.
 
 ### FML Coordinator
 
-**Responsibilities**:
-
-- Round state management
-- Update aggregation using FedAvg (Federated Averaging)
-- Model versioning
-- Round completion handling
-
-**Key Data Structures**:
-
-```go
-type RoundState struct {
-    RoundID   string
-    ModelURI  string
-    KOfN      int           // Minimum updates required
-    TimeoutS  int           // Round timeout in seconds
-    StartTime time.Time
-    Updates   []Update      // Collected updates
-    Completed bool
-    mu        sync.Mutex    // Per-round mutex
-}
-
-type Update struct {
-    RoundID      string                 `json:"round_id"`
-    PropletID    string                 `json:"proplet_id"`
-    BaseModelURI string                 `json:"base_model_uri"`
-    NumSamples   int                    `json:"num_samples"`
-    Metrics      map[string]interface{} `json:"metrics"`
-    Update       map[string]interface{} `json:"update"`  // Model weights
-    ForwardedAt  string                 `json:"forwarded_at,omitempty"`
-}
-
-type Model struct {
-    W       []float64 `json:"w"`  // Weights
-    B       float64   `json:"b"`  // Bias
-    Version int       `json:"version"`
-}
-```
-
-**Key Functions**:
-
-#### Round Initialization
-
-- **Subscribes to**: `fl/rounds/start`
-- **Purpose**: Initializes round state when a round starts
-- **Process**:
-  1. Parses round start message
-  2. Creates `RoundState` with:
-     - Default `k_of_n = 3` if not specified
-     - Default `timeout_s = 30` if not specified
-  3. Stores in `rounds` map keyed by `round_id`
-  4. Logs round initialization
-
-#### Update Handling
-
-- **Subscribes to**: `fml/updates`
-- **Purpose**: Receives and processes FL updates from proplets
-- **Process**:
-  1. Parses update message
-  2. **Lazy Initialization**: If round doesn't exist, creates it with defaults
-     - This handles cases where tasks are started via HTTP API without MQTT round start message
-  3. Adds update to round's update list
-  4. Checks if `len(updates) >= k_of_n`
-  5. If threshold reached:
-     - Marks round as completed
-     - Triggers aggregation in goroutine
-
-#### Aggregation
-
-- **Purpose**: Performs FedAvg aggregation and creates new global model
-- **Algorithm**: Weighted Federated Averaging
-  - For each update, weight by `num_samples`
-  - Sum weighted updates: `aggregated_w[i] += update.w[i] * num_samples`
-  - Normalize by total samples: `aggregated_w[i] /= total_samples`
-- **Process**:
-  1. Extracts updates from round state (with mutex protection)
-  2. Initializes aggregated model from first update's structure
-  3. Performs weighted aggregation
-  4. Normalizes by total samples
-  5. Increments model version
-  6. Saves model to file: `/tmp/fl-models/global_model_v{N}.json`
-  7. Publishes model to `fl/models/publish` (model server picks it up)
-  8. Publishes round completion to `fl/rounds/{round_id}/complete`
-
-#### Timeout Checking
-
-- **Purpose**: Background goroutine that checks for round timeouts
-- **Process**:
-  1. Runs every 5 seconds
-  2. For each incomplete round:
-     - Calculates elapsed time
-     - If `elapsed >= timeout_s`:
-       - Marks round as completed
-       - Triggers aggregation if updates exist
-
-**State Management**:
-
-- Round state stored in memory (`rounds` map)
-- Thread-safe with mutexes for map access and per-round update lists
-- Model version counter with mutex protection
-
-### Model Server
+The Coordinator is the FL-specific service that manages the federated learning lifecycle, from round initialization through aggregation to model publication.
 
 **Responsibilities**:
 
-- Model storage and persistence
-- Model distribution via MQTT (retained messages)
-- Initial default model creation
+- **Round State Management**: The Coordinator maintains state for each active training round, tracking which proplets have submitted updates, timing information, and completion status.
 
-**Key Functions**:
+- **Update Collection**: The Coordinator receives training updates from proplets (forwarded by the Manager) and collects them until sufficient updates are received to trigger aggregation.
 
-#### Model Publishing
+- **Federated Averaging**: When the minimum number of updates (k-of-n) is received, the Coordinator performs weighted federated averaging. Each update is weighted by the number of training samples used, then all weighted updates are averaged to produce a new global model.
 
-- **Subscribes to**: `fl/models/publish`
-- **Purpose**: Receives new models from coordinator and publishes them
-- **Process**:
-  1. Parses model JSON from coordinator
-  2. Saves to file: `/tmp/fl-models/global_model_v{N}.json`
-  3. Publishes to MQTT topic: `fl/models/global_model_v{N}` (retained message)
-  4. Retained messages allow clients to get the model immediately when subscribing
+- **Model Versioning**: The Coordinator maintains a version counter for global models, incrementing it each time a new aggregated model is created. This enables tracking of model evolution over multiple training rounds.
 
-#### Model Watching
+- **Round Completion**: The Coordinator handles round completion, either when sufficient updates are received or when a timeout is reached. It publishes completion notifications and triggers model publication.
 
-- **Purpose**: Background goroutine that watches for new model files
-- **Process**:
-  1. Polls `/tmp/fl-models/` directory every 5 seconds
-  2. Finds latest model version
-  3. If new version detected, publishes to MQTT
-  4. Uses retained messages for immediate availability
+- **Timeout Handling**: The Coordinator monitors each round for timeouts. If a round doesn't receive sufficient updates within the specified timeout period, it aggregates whatever updates have been received (if any) and completes the round.
 
-**Initialization**:
+**State Management**: The Coordinator maintains round state in memory, with thread-safe access patterns to handle concurrent updates from multiple proplets. Each round has its own mutex to protect its update list while allowing parallel processing of different rounds.
 
-- Creates default model `global_model_v0.json` if none exists
-- Publishes default model on startup
+### Model Registry
 
-### Proplet Service
-
-The FL implementation differs between the Rust proplet and embedded proplet, each optimized for their respective execution environments.
-
-#### Rust Proplet FL Implementation
+The Model Registry is responsible for storing, versioning, and distributing global models to proplets.
 
 **Responsibilities**:
 
-- WASM module execution using Wasmtime runtime
-- Task result collection
-- FL update publication (HTTP-first with MQTT fallback)
+- **Model Storage**: The Model Registry persists aggregated models to disk, maintaining a version history that allows proplets to fetch specific model versions.
 
-**FL Update Detection and Publishing**:
+- **Model Distribution**: When a new model is published by the Coordinator, the Model Registry receives it and makes it available via HTTP endpoints. Proplets can fetch models by version number.
 
-- **Detection**: Checks for `ROUND_ID` environment variable in task
-- **Process**:
-  1. After WASM execution completes, captures stdout
-  2. Parses stdout as JSON (expected FL update format)
-  3. If valid JSON and `ROUND_ID` present:
-     - **Primary**: Attempts HTTP POST to coordinator: `{COORDINATOR_URL}/update`
-     - **Fallback**: If HTTP fails, publishes to SuperMQ MQTT topic: `fl/rounds/{round_id}/updates/{proplet_id}`
-  4. If JSON parsing fails, logs warning (unless task failed)
+- **Initial Model Provisioning**: The Model Registry provides an initial model (version 0) that serves as the starting point for the first training round.
 
-**HTTP-First Strategy**:
+**Model Lifecycle**: Models progress through versions as training rounds complete. Each round produces a new version that incorporates the knowledge learned from all participating proplets. Proplets fetch the latest model version at the start of each round, train on it locally, and submit updates that contribute to the next version.
 
-- Rust proplet uses HTTP POST for direct communication with coordinator
-- Falls back to MQTT if HTTP fails (network issues, coordinator unavailable)
-- Provides better performance and lower latency when coordinator is accessible
-- MQTT fallback ensures reliability in distributed scenarios
+### Proplet Service (Edge Workers)
 
-**WASM Execution**:
-
-- Uses Wasmtime runtime (external) or wazero (embedded)
-- Executes exported function from WASM module
-- Captures stdout as task result
-- Sets environment variables from task spec including:
-  - `ROUND_ID`: Round identifier
-  - `MODEL_URI`: Model MQTT topic or HTTP URL
-  - `COORDINATOR_URL`: HTTP coordinator endpoint
-  - `HYPERPARAMS`: JSON-encoded hyperparameters
-
-#### Embedded Proplet FL Implementation
+Proplets are the edge devices that execute training workloads. They run WebAssembly modules that perform local training on device-resident data.
 
 **Responsibilities**:
 
-- WASM module execution using WAMR (WebAssembly Micro Runtime)
-- FL task detection and data fetching
-- Host function registration for WASM modules
-- FL update publication via MQTT
+- **WASM Execution**: Proplets execute WebAssembly training modules using a WASM runtime (Wasmtime for Rust proplets, WAMR for embedded proplets). The runtime provides isolation, security, and portability.
 
-**FL Task Detection and Workflow**:
+- **Data Access**: Proplets fetch the current global model from the Model Registry and access local training datasets. The model and dataset are provided to the WASM module via environment variables or host functions, depending on the proplet implementation.
 
-- **Detection**: Checks for `ROUND_ID` environment variable in task start command
-- **Process**:
-  1. **Task Detection**: Proplet detects FL task via `ROUND_ID` environment variable
-  2. **PROPLET_ID Setup**: Sets `PROPLET_ID` from `config.client_id` (Manager-known identity)
-  3. **Model Fetching**: Fetches model from Model Registry via HTTP GET
-     - URL: `{MODEL_REGISTRY_URL}/models/{version}`
-     - Stores result for WASM module access
-     - Falls back to MQTT subscription if HTTP fails
-  4. **Dataset Fetching**: Fetches dataset from Local Data Store via HTTP GET
-     - URL: `{DATA_STORE_URL}/datasets/{proplet_id}`
-     - Stores result for WASM module access
-  5. **WASM Execution**: Executes WASM module with host functions registered
-  6. **Host Function Calls**: WASM module calls host functions to get:
-     - `PROPLET_ID` via `get_proplet_id()`
-     - `MODEL_DATA` via `get_model_data()`
-     - `DATASET_DATA` via `get_dataset_data()`
-  7. **Training**: WASM module performs local training and outputs JSON update to stdout
-  8. **Update Submission**: Proplet captures stdout, parses JSON, and publishes to SuperMQ MQTT:
-     - Topic: `fl/rounds/{round_id}/updates/{proplet_id}`
-     - Message: JSON update with `round_id`, `proplet_id`, `update`, `metrics`, etc.
+- **Local Training**: The WASM module performs training iterations on local data, updating model weights based on the local dataset. This training happens entirely on the device without exposing raw data.
 
-**Host Functions**:
+- **Update Generation**: After training completes, the proplet captures the training output (model weight updates) and formats it as a federated learning update message containing the round ID, proplet ID, number of training samples, metrics, and weight deltas.
 
-The embedded proplet provides three host functions for WASM modules:
+- **Update Submission**: Proplets submit updates to the Coordinator, either via HTTP POST (preferred for Rust proplets) or MQTT publish (fallback or for embedded proplets). The update is forwarded by the Manager to the Coordinator for aggregation.
 
-1. **`get_proplet_id(ret_offset *i32, ret_len *i32) -> i32`**
-   - Returns PROPLET_ID as string in WASM linear memory
-   - Used by WASM module to identify itself in FL updates
+**Proplet Variants**: Propeller supports two proplet implementations optimized for different environments:
 
-2. **`get_model_data(ret_offset *i32, ret_len *i32) -> i32`**
-   - Returns MODEL_DATA JSON string in WASM linear memory
-   - Contains global model weights fetched from Model Registry
+- **Rust Proplet**: Full-featured implementation using Wasmtime runtime, suitable for edge servers, gateways, and devices with sufficient resources. Supports HTTP-first update submission with MQTT fallback.
 
-3. **`get_dataset_data(ret_offset *i32, ret_len *i32) -> i32`**
-   - Returns DATASET_DATA JSON string in WASM linear memory
-   - Contains local dataset fetched from Data Store
-
-**Environment Variable Fallback**:
-
-For compatibility with TinyGo/WASI, the embedded proplet also sets these as environment variables:
-
-- `PROPLET_ID`: Set from `config.client_id`
-- `MODEL_DATA`: Set from fetched model JSON
-- `DATASET_DATA`: Set from fetched dataset JSON
-
-**WASM Execution**:
-
-- Uses WAMR runtime (compiled into Zephyr firmware)
-- Supports both interpreter mode and AOT compilation
-- Executes exported function from WASM module
-- Captures stdout for update extraction
-- Memory-constrained environment (40 KB heap pool)
-
-#### Differences from Rust Proplet
-
-| Feature | Rust Proplet | Embedded Proplet |
-| --- | --- | --- |
-| **Update Submission** | HTTP POST (primary), MQTT (fallback) | MQTT only |
-| **Data Access** | Environment variables | Host functions + env vars |
-| **Model Fetching** | WASM handles via MQTT/HTTP | Proplet fetches before execution |
-| **Dataset Fetching** | WASM handles | Proplet fetches before execution |
-| **Runtime** | Wasmtime (external) or wazero | WAMR (embedded in Zephyr) |
-| **Memory Constraints** | Host system resources | 40 KB heap pool |
+- **Embedded Proplet**: Lightweight implementation using WAMR runtime, suitable for constrained microcontrollers. Uses host functions for data access and MQTT for all communication.
 
 ### Client WASM Module
 
-**Purpose**: Sample FL training workload that runs on each proplet
+The Client WASM module is the portable training workload that runs on each proplet. It contains the machine learning training logic but is agnostic to the federated learning infrastructure.
 
-**Implementation Details**:
+**Responsibilities**:
 
-#### Environment Variables
+- **Model Initialization**: The WASM module receives the current global model (via environment variables or host functions) and initializes its local training state.
 
-- `ROUND_ID`: Current round identifier
-- `MODEL_URI`: MQTT topic for base model (e.g., `fl/models/global_model_v0`)
-- `HYPERPARAMS`: JSON string with training hyperparameters
+- **Local Training**: The module performs training iterations on the local dataset, applying the specified hyperparameters (learning rate, batch size, epochs). Training happens entirely within the WASM sandbox.
 
-#### Training Process
+- **Update Computation**: After training, the module computes weight updates (deltas or new weights) that represent what was learned from the local data.
 
-1. **Model Initialization**:
-   - Default model: `{"w": [0.0, 0.0, 0.0], "b": 0.0}`
-   - In production, would subscribe to `MODEL_URI` MQTT topic to fetch model
+- **Output Generation**: The module outputs a JSON-formatted update message to stdout, which is captured by the proplet runtime and submitted to the Coordinator.
 
-2. **Local Training**:
-   - Simulates training with random gradient updates
-   - Applies learning rate: `weights[i] += lr * gradient`
-   - Runs for specified number of epochs
+**Portability**: Because the training logic is compiled to WebAssembly, the same WASM module can run on different proplet types (Rust or embedded) without modification, as long as the data access interface (environment variables or host functions) is consistent.
 
-3. **Update Generation**:
-   - Creates update JSON with `round_id`, `proplet_id`, `num_samples`, `metrics`, and `update` fields
-   - Outputs to stdout (captured by proplet)
+### SuperMQ MQTT Infrastructure
 
-## Message Flow and MQTT Topics
+SuperMQ provides the underlying MQTT messaging infrastructure that enables asynchronous communication between all components.
 
-| Topic | Publisher | Subscriber | Purpose |
-| --- | --- | --- | --- |
-| `fl/rounds/start` | External trigger / Test script | Manager, Coordinator | Round start message |
-| `fl/rounds/{round_id}/updates/{proplet_id}` | Proplet | Manager | FL update from proplet |
-| `fml/updates` | Manager | Coordinator | Forwarded updates for aggregation |
-| `fl/models/publish` | Coordinator | Model Server | New aggregated model |
-| `fl/models/global_model_v{N}` | Model Server | Clients (future) | Published model (retained) |
-| `fl/rounds/{round_id}/complete` | Coordinator | External (future) | Round completion notification |
+**Responsibilities**:
 
-### Complete Message Flow
+- **Message Bus**: SuperMQ acts as a central message bus, allowing components to publish and subscribe to topics without direct point-to-point connections.
 
-```markdown
+- **Topic-Based Routing**: Components communicate via well-defined topic patterns (e.g., `fl/rounds/start`, `fl/rounds/{round_id}/updates/{proplet_id}`), enabling loose coupling and scalability.
+
+- **Retained Messages**: SuperMQ supports retained messages, allowing newly subscribed components to immediately receive the latest model version without waiting for the next publication.
+
+- **Quality of Service**: MQTT's QoS levels ensure reliable message delivery even in unreliable network conditions, critical for distributed edge deployments.
+
+## Propeller Training Round Lifecycle
+
+The following diagram shows the complete message flow in Propeller during a federated learning round:
+
+```text
 1. Round Start
    ┌─────────────────────────────────────┐
    │ External trigger / test script     │
@@ -460,216 +263,250 @@ For compatibility with TinyGo/WASI, the embedded proplet also sets these as envi
         │ Publishes to: fl/models/publish
         │
    ┌────▼──────────┐
-   │ Model Server │ (saves and republishes)
+   │ Model Registry│ (saves and republishes)
    └────┬──────────┘
         │
         │ Publishes to: fl/models/global_model_v{N}
         │ (retained message)
 ```
 
-### Message Formats
+### 1. Round Initialization
 
-#### Round Start Message
+An external trigger (test script, API call, or scheduled job) publishes a round start message to the `fl/rounds/start` MQTT topic. This message contains:
 
-```json
-{
-  "round_id": "r-1768464194",
-  "model_uri": "fl/models/global_model_v0",
-  "task_wasm_image": "oci://example/fl-client-wasm:latest",
-  "participants": ["proplet-1", "proplet-2", "proplet-3"],
-  "hyperparams": {
-    "epochs": 1,
-    "lr": 0.01,
-    "batch_size": 16
-  },
-  "k_of_n": 3,
-  "timeout_s": 30
-}
+- Round identifier
+- Model URI (pointing to the current global model version)
+- List of participating proplet IDs
+- Training hyperparameters (learning rate, batch size, epochs)
+- Minimum number of updates required (k-of-n)
+- Round timeout duration
+
+Both the Manager and Coordinator subscribe to this topic and process the message:
+
+- **Manager**: Creates training tasks for each participating proplet, configuring each task with the round ID, model URI, and hyperparameters as environment variables. Tasks are started immediately.
+
+- **Coordinator**: Initializes round state, creating a tracking structure that will collect updates until the k-of-n threshold is reached or timeout occurs.
+
+### 2. Task Execution
+
+Each proplet receives its task start command from the Manager and begins execution:
+
+- **Model Fetching**: The proplet fetches the current global model from the Model Registry using the model URI provided in the task configuration.
+
+- **Dataset Access**: The proplet accesses its local training dataset. This may be fetched from a local data store or accessed directly from device storage.
+
+- **WASM Execution**: The proplet launches the WASM training module, providing the model and dataset via environment variables or host functions. The WASM module performs local training iterations, updating weights based on the local data.
+
+- **Update Generation**: After training completes, the WASM module outputs a JSON update message containing the learned weight changes, number of training samples, and any training metrics.
+
+### 3. Update Collection
+
+Proplets submit their updates to the Coordinator:
+
+- **Update Submission**: Each proplet publishes its update to an MQTT topic specific to that proplet and round, or posts it directly to the Coordinator via HTTP.
+
+- **Message Forwarding**: If submitted via MQTT, the Manager forwards the update message verbatim to the Coordinator's update topic. The Manager does not inspect or modify the update.
+
+- **Update Collection**: The Coordinator receives each update and adds it to the round's update collection. The Coordinator tracks which proplets have submitted updates and maintains a count.
+
+### 4. Aggregation
+
+When the Coordinator receives the minimum number of updates (k-of-n), it triggers aggregation:
+
+- **Weight Extraction**: The Coordinator extracts weight updates from each collected update message. Each update is weighted by the number of training samples used by that proplet.
+
+- **Federated Averaging**: The Coordinator performs weighted averaging: it sums all weighted updates and normalizes by the total number of training samples across all updates. This produces a new global model that incorporates knowledge from all participating proplets.
+
+- **Version Increment**: The Coordinator increments the model version counter, creating a new version number for the aggregated model.
+
+- **Model Persistence**: The new global model is saved to the Model Registry, which persists it to disk and makes it available for the next round.
+
+### 5. Model Distribution
+
+The aggregated model is distributed to proplets for use in subsequent rounds:
+
+- **Model Publication**: The Coordinator publishes the new model to the Model Registry via a publish topic.
+
+- **Registry Update**: The Model Registry receives the new model, saves it with the new version number, and makes it available via HTTP endpoints.
+
+- **Retained Message**: The Model Registry also publishes the model to an MQTT topic as a retained message, allowing proplets that subscribe later to immediately receive the latest version.
+
+### 6. Round Completion
+
+The Coordinator handles round completion:
+
+- **Completion Notification**: The Coordinator publishes a round completion message containing the round ID, new model version, number of updates received, and completion timestamp.
+
+- **Timeout Handling**: If a round times out before receiving k-of-n updates, the Coordinator aggregates whatever updates were received (if any) and completes the round. This ensures progress even if some proplets fail or are slow to respond.
+
+- **State Cleanup**: After completion, the Coordinator may clean up round state, though some implementations maintain history for monitoring and debugging.
+
+## Communication Patterns
+
+The FML system uses several communication patterns to coordinate distributed training:
+
+### Communication Flow
+
+The system combines MQTT publish-subscribe and HTTP request-response patterns:
+
+```text
+┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+│  Proplet    │         │   Manager   │         │ Coordinator │
+│             │         │             │         │             │
+│ 1. Fetch    │────────▶│             │         │             │
+│    Model    │  HTTP   │             │         │             │
+│    (GET)    │         │             │         │             │
+│             │◀────────│             │         │             │
+│             │         │             │         │             │
+│ 2. Train    │         │             │         │             │
+│    locally  │         │             │         │             │
+│             │         │             │         │             │
+│ 3. Submit   │────────▶│  Forward    │────────▶│  Aggregate  │
+│    Update   │  MQTT   │  (verbatim) │  MQTT   │             │
+│             │         │             │         │             │
+│             │         │             │         │             │
+│ 4. Receive  │◀────────│             │         │             │
+│    New      │  MQTT   │             │         │  Publish    │
+│    Model    │(retained)│             │         │  New Model  │
+│             │         │             │         │             │
+└─────────────┘         └─────────────┘         └─────────────┘
+        │                       │                       │
+        │                       │                       │
+        └───────────────────────┴───────────────────────┘
+                          SuperMQ MQTT
+                          Message Bus
 ```
 
-#### FL Update Message (from Proplet)
+### Publish-Subscribe (MQTT Topics)
 
-```json
-{
-  "round_id": "r-1768464194",
-  "base_model_uri": "fl/models/global_model_v0",
-  "num_samples": 512,
-  "metrics": {
-    "loss": 0.73
-  },
-  "update": {
-    "w": [0.12, -0.05, 1.01],
-    "b": 0.33
-  }
-}
-```
+Most communication uses MQTT's publish-subscribe pattern:
 
-#### Aggregated Model
+- **Round Start**: External triggers publish to `fl/rounds/start`, and both Manager and Coordinator subscribe to initialize the round.
 
-```json
-{
-  "w": [0.08, -0.02, 0.95],
-  "b": 0.25,
-  "version": 1
-}
-```
+- **Update Submission**: Proplets publish to `fl/rounds/{round_id}/updates/{proplet_id}`, the Manager subscribes to forward updates, and the Coordinator subscribes to collect them.
 
-#### Round Completion Message
+- **Model Distribution**: The Model Registry publishes to `fl/models/global_model_v{N}` as retained messages, allowing proplets to fetch the latest model.
 
-```json
-{
-  "round_id": "r-1768464194",
-  "model_version": 1,
-  "model_topic": "fl/models/global_model_v1",
-  "num_updates": 3,
-  "total_samples": 1536,
-  "completed_at": "2026-01-12T10:30:45Z"
-}
-```
+- **Round Completion**: The Coordinator publishes to `fl/rounds/{round_id}/complete` to notify external systems of round completion.
 
-## Implementation Details
+### Request-Response (HTTP)
 
-### Thread Safety
+Some interactions use HTTP for direct, synchronous communication:
 
-**Coordinator**:
+- **Model Fetching**: Proplets fetch models from the Model Registry via HTTP GET requests, providing a simple, reliable way to retrieve specific model versions.
 
-- Mutexes protect `rounds` map access
-- Per-round mutexes protect individual round's update lists
-- Model version counter with mutex protection
+- **Update Submission (Rust Proplet)**: Rust proplets prefer HTTP POST to submit updates directly to the Coordinator, providing lower latency and better error handling than MQTT in reliable network conditions.
 
-**Manager**:
+- **Dataset Access**: Proplets may fetch datasets from a local data store via HTTP, though datasets can also be accessed directly from device storage.
 
-- Stateless forwarding (no shared state)
-- Goroutines for async message handling
+### Hybrid Approach
 
-### Error Handling
+The system uses a hybrid approach that combines the strengths of both patterns:
 
-**Coordinator**:
+- **MQTT for Orchestration**: MQTT's asynchronous, topic-based routing is ideal for coordinating distributed rounds across many devices.
 
-- Lazy round initialization if update received before round start
-- Timeout handling for incomplete rounds
-- JSON parsing errors logged and ignored
+- **HTTP for Data Transfer**: HTTP's request-response model is better suited for fetching large model artifacts and submitting updates when network conditions are reliable.
 
-**Proplet**:
+- **Fallback Mechanisms**: Proplets can fall back from HTTP to MQTT if HTTP requests fail, ensuring reliability in diverse network conditions.
 
-- WASM execution errors published as task results
-- JSON parsing failures logged (non-fatal for non-FL tasks)
+## Model Lifecycle and Versioning
 
-### Persistence
+Models in the FML system progress through versions as training rounds complete:
 
-**Current Implementation**:
+### Initial Model
 
-- Round state: In-memory only (lost on restart)
-- Models: Persisted to `/tmp/fl-models/` (Docker volume)
-- Model versions: Incremented counter (persists across restarts if coordinator restarts)
+The process begins with an initial model (version 0) that serves as the starting point. This model may be:
 
-**Future Enhancements**:
+- A randomly initialized model with zero or small random weights
+- A pre-trained model from a previous training session
+- A model trained on a small central dataset
 
-- Database-backed round state
-- Model version history
-- Round completion logs
+The initial model is stored in the Model Registry and made available to all proplets.
 
-### Scalability Considerations
+### Training Rounds
 
-**Current Limitations**:
+Each training round follows this pattern:
 
-- Single coordinator instance (no horizontal scaling)
-- In-memory round state (limited by RAM)
-- No distributed locking for coordinator
+1. **Model Distribution**: Proplets fetch the current global model version (e.g., version N) from the Model Registry.
 
-**Design for Future**:
+2. **Local Training**: Each proplet trains on the global model using its local dataset, producing weight updates.
 
-- Coordinator can be made stateless with external storage
-- Multiple coordinators with consistent hashing
-- Distributed locking for aggregation
+3. **Aggregation**: The Coordinator aggregates updates from k proplets, producing a new global model (version N+1).
 
-## Running the Demo
+4. **Model Update**: The new model is stored in the Model Registry and becomes the current version for the next round.
 
-For detailed instructions on running the FML demo, see the [FML Demo README](../examples/fl-demo/README.md).
+### Incremental Improvement
 
-The demo includes:
+Each round incrementally improves the model by incorporating knowledge from participating proplets. The federated averaging algorithm ensures that:
 
-- **Rust Proplet Demo**: Full FL workflow with Rust proplets using SuperMQ
-- **Embedded Proplet Demo**: FL workflow with embedded proplets (see [Embedded Proplet FL README](../examples/fl-embedded/README.md))
+- Updates from proplets with more training samples have greater influence on the aggregated model
+- The model converges toward a solution that works well across all participating devices' data distributions
+- No single proplet's data dominates the final model
 
-### Quick Start
+### Version History
 
-1. **Prerequisites**:
-   - Docker and Docker Compose
-   - Go 1.21+ (for building WASM client)
-   - SuperMQ infrastructure (see demo README for setup)
+The Model Registry maintains a version history, allowing:
 
-2. **Build WASM Client**:
+- **Rollback**: If a new model version performs poorly, the system can roll back to a previous version.
 
-   ```bash
-   cd examples/fl-demo/client-wasm
-   GOOS=wasip1 GOARCH=wasm go build -o fl-client.wasm fl-client.go
-   ```
+- **Analysis**: Researchers and operators can compare model versions to understand how the model evolved over time.
 
-3. **Start Services**:
+- **Reproducibility**: Specific model versions can be referenced and reproduced for testing and validation.
 
-   ```bash
-   cd examples/fl-demo
-   docker compose up -d
-   ```
+## Scalability and Performance Considerations
 
-4. **Trigger a Round**:
-   - Use test scripts (see demo README)
-   - Or publish to MQTT topic `fl/rounds/start` via SuperMQ
+The FML architecture is designed to scale across several dimensions:
 
-5. **Monitor Progress**:
-   - Coordinator logs: `docker compose logs -f coordinator`
-   - Manager logs: `docker compose logs -f manager`
-   - Check aggregated models: `docker compose exec model-server ls -la /tmp/fl-models/`
+### Horizontal Scaling
 
-## Monitoring
+- **Multiple Proplets**: The system naturally scales to support hundreds or thousands of proplets participating in a single round. The Manager can create tasks for all participants in parallel.
 
-### Expected Log Patterns
+- **Multiple Coordinators**: While the current implementation uses a single Coordinator, the architecture supports multiple Coordinators with consistent hashing or round assignment to distribute load.
 
-**Coordinator**:
+- **Distributed Model Registry**: The Model Registry can be replicated or sharded to handle high request volumes from many proplets fetching models simultaneously.
 
-```bash
-INFO Received update round_id=r-... proplet_id=proplet-1 total_updates=1 k_of_n=3
-INFO Received update round_id=r-... proplet_id=proplet-2 total_updates=2 k_of_n=3
-INFO Received update round_id=r-... proplet_id=proplet-3 total_updates=3 k_of_n=3
-INFO Round complete: received k_of_n updates
-INFO Aggregating updates round_id=r-... num_updates=3
-INFO Aggregated model saved round_id=r-... version=1
-INFO Published model to model server version=1
-INFO Published round completion round_id=r-...
-```
+### Network Efficiency
 
-**Manager**:
+- **Chunked Transport**: Large model artifacts are automatically chunked for efficient MQTT transport, allowing models to be distributed even over bandwidth-constrained networks.
 
-```bash
-INFO launched task for FL round participant round_id=r-... proplet_id=proplet-1
-INFO launched task for FL round participant round_id=r-... proplet_id=proplet-2
-INFO launched task for FL round participant round_id=r-... proplet_id=proplet-3
-INFO forwarded FL update to coordinator round_id=r-... proplet_id=proplet-1
-INFO forwarded FL update to coordinator round_id=r-... proplet_id=proplet-2
-INFO forwarded FL update to coordinator round_id=r-... proplet_id=proplet-3
-```
+- **Retained Messages**: MQTT retained messages allow proplets to immediately receive the latest model when they subscribe, reducing latency and avoiding missed updates.
 
-**Proplet**:
+- **Asynchronous Communication**: MQTT's asynchronous nature allows proplets to submit updates without blocking, and the Coordinator can process updates as they arrive.
 
-```bash
-INFO Received start command for task <task-id>
-INFO Executing WASM module for task <task-id>
-INFO Detected FL task via ROUND_ID env. Publishing update to coordinator topic: fl/rounds/r-.../updates/proplet-1
-INFO Successfully published FL update to coordinator: fl/rounds/r-.../updates/proplet-1
-```
+### Fault Tolerance
 
-### Monitoring MQTT Topics
+- **Timeout Handling**: Rounds complete even if some proplets fail to submit updates, ensuring progress despite device failures or network issues.
 
-Subscribe to SuperMQ MQTT topics to monitor messages:
+- **Update Thresholds**: The k-of-n parameter allows rounds to complete with a subset of participants, providing resilience to device failures.
 
-```bash
-# Monitor all FL topics (connects to SuperMQ MQTT adapter)
-mosquitto_sub -h localhost -p 1883 -t "fl/#" -v
+- **Fallback Mechanisms**: Proplets can fall back from HTTP to MQTT if network conditions degrade, ensuring updates are delivered even in challenging network environments.
 
-# Monitor coordinator updates
-mosquitto_sub -h localhost -p 1883 -t "fml/updates" -v
+## Security and Privacy
 
-# Monitor round completions
-mosquitto_sub -h localhost -p 1883 -t "fl/rounds/+/complete" -v
-```
+Federated learning inherently provides privacy benefits, but the system includes additional security considerations:
+
+### Data Privacy
+
+- **No Raw Data Transmission**: Only model weight updates are transmitted, never raw training data. This provides strong privacy guarantees even if messages are intercepted.
+
+- **Local Training**: All training happens on-device within the WASM sandbox, ensuring that raw data never leaves the device's secure execution environment.
+
+- **Isolated Execution**: WASM's sandboxing provides isolation between the training workload and the proplet's host system, preventing data leakage through side channels.
+
+### Communication Security
+
+- **SuperMQ Authentication**: All MQTT communication is authenticated via SuperMQ's client authentication system, ensuring only authorized components can participate.
+
+- **Encrypted Transport**: MQTT connections can use TLS to encrypt messages in transit, protecting updates from interception or tampering.
+
+- **Topic Access Control**: SuperMQ's topic-based access control ensures that proplets can only publish to their designated update topics and cannot access other proplets' updates.
+
+### Model Security
+
+- **Model Integrity**: Model versions are cryptographically hashed and versioned, allowing detection of tampering or corruption.
+
+- **Access Control**: The Model Registry can implement access control to ensure only authorized proplets can fetch models.
+
+## Demo Application
+
+For detailed setup instructions, step-by-step guide, and hands-on examples of running federated learning with Propeller, see the [FML Demo README](https://github.com/absmach/propeller/blob/2a17f0c45617be08cbc1c6ed461479ecb6cefddb/examples/fl-demo/README.md).
