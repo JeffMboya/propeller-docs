@@ -1,6 +1,6 @@
 # Federated Machine Learning in Propeller
 
-Propeller implements Federated Machine Learning (FML) as a workload-agnostic federated learning framework that enables distributed machine learning training across multiple edge devices without centralizing raw data. This document explains the architecture of Propeller's FML system and how the components interact.
+Propeller implements Federated Machine Learning (FML) as a workload-agnostic federated learning framework that enables distributed machine learning training across multiple edge devices without centralizing raw data. This document explains the motivation for federated learning, the high-level architecture of Propeller's FML system, and how the components interact during a training round.
 
 ## Motivation for Federated Learning
 
@@ -34,7 +34,7 @@ Federated learning provides natural scalability advantages:
 - **Reduced Server Load**: The central coordinator only aggregates updates, not raw data, significantly reducing computational and storage requirements.
 - **Incremental Learning**: New devices can join the federation without retraining from scratch, and models can be updated incrementally as new data becomes available.
 
-## Propeller's FML system Architecture
+## Architecture
 
 Propeller's FML system is built on a workload-agnostic design where the core orchestration layer (Manager) has no FL-specific logic. Instead, FL-specific functionality is handled by an external Coordinator service that manages rounds, aggregation, and model versioning. This separation of concerns allows Propeller to support federated learning while remaining flexible enough to orchestrate other types of distributed workloads.
 
@@ -48,9 +48,7 @@ Propeller's FML system is built on a workload-agnostic design where the core orc
 
 4. **WASM-Based Training**: Training workloads execute as WebAssembly modules, providing portability, security isolation, and consistent execution across different device architectures.
 
-### System Architecture Overview
-
-The following diagram illustrates the high-level architecture and message flow of Propeller's federated learning system:
+The following diagram illustrates the architecture and message flow of Propeller's federated learning system:
 
 ```text
                          ┌──────────────────────┐
@@ -118,7 +116,7 @@ The following diagram illustrates the high-level architecture and message flow o
 
 ## System Components
 
-The FML system consists of the following components that work together to enable federated learning:
+Propeller's FML system consists of the following components that work together to enable federated learning:
 
 ### Manager Service
 
@@ -132,7 +130,7 @@ The Manager is Propeller's core orchestration component. In the context of feder
 
 - **Proplet Management**: The Manager maintains awareness of available proplets and their health status, ensuring tasks are only created for active, reachable devices.
 
-**Key Design**: The Manager remains completely workload-agnostic. It doesn't understand federated learning semantics, model structures, or aggregation logic. This separation allows the same Manager to orchestrate other types of distributed workloads beyond federated learning.
+**Key Design**: Propeller's Manager remains completely workload-agnostic. It doesn't understand federated learning semantics, model structures, or aggregation logic. This separation allows Propeller's Manager to orchestrate other types of distributed workloads beyond federated learning.
 
 ### FML Coordinator
 
@@ -204,7 +202,7 @@ The Client WASM module is the portable training workload that runs on each propl
 
 - **Output Generation**: The module outputs a JSON-formatted update message to stdout, which is captured by the proplet runtime and submitted to the Coordinator.
 
-**Portability**: Because the training logic is compiled to WebAssembly, the same WASM module can run on different proplet types (Rust or embedded) without modification, as long as the data access interface (environment variables or host functions) is consistent.
+**Portability**: In Propeller, because the training logic is compiled to WebAssembly, the same WASM module can run on different proplet types (Rust or embedded) without modification, as long as the data access interface (environment variables or host functions) is consistent.
 
 ### SuperMQ MQTT Infrastructure
 
@@ -220,9 +218,9 @@ SuperMQ provides the underlying MQTT messaging infrastructure that enables async
 
 - **Quality of Service**: MQTT's QoS levels ensure reliable message delivery even in unreliable network conditions, critical for distributed edge deployments.
 
-## Propeller Training Round Lifecycle
+## Training Round Lifecycle
 
-The following diagram shows the complete message flow in Propeller during a federated learning round:
+The following diagram shows the complete message flow during a federated learning round:
 
 ```text
 1. Round Start
@@ -343,11 +341,11 @@ The Coordinator handles round completion:
 
 ## Communication Patterns
 
-The FML system uses several communication patterns to coordinate distributed training:
+Propeller's FML system uses several communication patterns to coordinate distributed training:
 
 ### Communication Flow
 
-The system combines MQTT publish-subscribe and HTTP request-response patterns:
+Propeller combines MQTT publish-subscribe and HTTP request-response patterns:
 
 ```text
 ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
@@ -401,7 +399,7 @@ Some interactions use HTTP for direct, synchronous communication:
 
 ### Hybrid Approach
 
-The system uses a hybrid approach that combines the strengths of both patterns:
+Propeller uses a hybrid approach that combines the strengths of both patterns:
 
 - **MQTT for Orchestration**: MQTT's asynchronous, topic-based routing is ideal for coordinating distributed rounds across many devices.
 
@@ -411,7 +409,7 @@ The system uses a hybrid approach that combines the strengths of both patterns:
 
 ## Model Lifecycle and Versioning
 
-Models in the FML system progress through versions as training rounds complete:
+Models in Propeller's FML system progress through versions as training rounds complete:
 
 ### Initial Model
 
@@ -447,7 +445,7 @@ Each round incrementally improves the model by incorporating knowledge from part
 
 The Model Registry maintains a version history, allowing:
 
-- **Rollback**: If a new model version performs poorly, the system can roll back to a previous version.
+- **Rollback**: If a new model version performs poorly, Propeller can roll back to a previous version.
 
 - **Analysis**: Researchers and operators can compare model versions to understand how the model evolved over time.
 
@@ -455,55 +453,55 @@ The Model Registry maintains a version history, allowing:
 
 ## Scalability and Performance Considerations
 
-The FML architecture is designed to scale across several dimensions:
+Propeller's FML architecture is designed to scale across several dimensions:
 
 ### Horizontal Scaling
 
-- **Multiple Proplets**: The system naturally scales to support hundreds or thousands of proplets participating in a single round. The Manager can create tasks for all participants in parallel.
+- **Multiple Proplets**: Propeller naturally scales to support hundreds or thousands of proplets participating in a single round. The Manager can create tasks for all participants in parallel.
 
-- **Multiple Coordinators**: While the current implementation uses a single Coordinator, the architecture supports multiple Coordinators with consistent hashing or round assignment to distribute load.
+- **Multiple Coordinators**: While Propeller's current implementation uses a single Coordinator, the architecture supports multiple Coordinators with consistent hashing or round assignment to distribute load.
 
 - **Distributed Model Registry**: The Model Registry can be replicated or sharded to handle high request volumes from many proplets fetching models simultaneously.
 
 ### Network Efficiency
 
-- **Chunked Transport**: Large model artifacts are automatically chunked for efficient MQTT transport, allowing models to be distributed even over bandwidth-constrained networks.
+- **Chunked Transport**: Propeller automatically chunks large model artifacts for efficient MQTT transport, allowing models to be distributed even over bandwidth-constrained networks.
 
-- **Retained Messages**: MQTT retained messages allow proplets to immediately receive the latest model when they subscribe, reducing latency and avoiding missed updates.
+- **Retained Messages**: Propeller uses MQTT retained messages to allow proplets to immediately receive the latest model when they subscribe, reducing latency and avoiding missed updates.
 
-- **Asynchronous Communication**: MQTT's asynchronous nature allows proplets to submit updates without blocking, and the Coordinator can process updates as they arrive.
+- **Asynchronous Communication**: Propeller leverages MQTT's asynchronous nature to allow proplets to submit updates without blocking, and the Coordinator can process updates as they arrive.
 
 ### Fault Tolerance
 
-- **Timeout Handling**: Rounds complete even if some proplets fail to submit updates, ensuring progress despite device failures or network issues.
+- **Timeout Handling**: Propeller ensures rounds complete even if some proplets fail to submit updates, ensuring progress despite device failures or network issues.
 
 - **Update Thresholds**: The k-of-n parameter allows rounds to complete with a subset of participants, providing resilience to device failures.
 
-- **Fallback Mechanisms**: Proplets can fall back from HTTP to MQTT if network conditions degrade, ensuring updates are delivered even in challenging network environments.
+- **Fallback Mechanisms**: Propeller's proplets can fall back from HTTP to MQTT if network conditions degrade, ensuring updates are delivered even in challenging network environments.
 
 ## Security and Privacy
 
-Federated learning inherently provides privacy benefits, but the system includes additional security considerations:
+Federated learning inherently provides privacy benefits, but Propeller includes additional security considerations:
 
 ### Data Privacy
 
 - **No Raw Data Transmission**: Only model weight updates are transmitted, never raw training data. This provides strong privacy guarantees even if messages are intercepted.
 
-- **Local Training**: All training happens on-device within the WASM sandbox, ensuring that raw data never leaves the device's secure execution environment.
+- **Local Training**: In Propeller, all training happens on-device within the WASM sandbox, ensuring that raw data never leaves the device's secure execution environment.
 
-- **Isolated Execution**: WASM's sandboxing provides isolation between the training workload and the proplet's host system, preventing data leakage through side channels.
+- **Isolated Execution**: Propeller leverages WASM's sandboxing to provide isolation between the training workload and the proplet's host system, preventing data leakage through side channels.
 
 ### Communication Security
 
-- **SuperMQ Authentication**: All MQTT communication is authenticated via SuperMQ's client authentication system, ensuring only authorized components can participate.
+- **SuperMQ Authentication**: In Propeller, all MQTT communication is authenticated via SuperMQ's client authentication system, ensuring only authorized components can participate.
 
 - **Encrypted Transport**: MQTT connections can use TLS to encrypt messages in transit, protecting updates from interception or tampering.
 
-- **Topic Access Control**: SuperMQ's topic-based access control ensures that proplets can only publish to their designated update topics and cannot access other proplets' updates.
+- **Topic Access Control**: Propeller uses SuperMQ's topic-based access control to ensure that proplets can only publish to their designated update topics and cannot access other proplets' updates.
 
 ### Model Security
 
-- **Model Integrity**: Model versions are cryptographically hashed and versioned, allowing detection of tampering or corruption.
+- **Model Integrity**: Propeller cryptographically hashes and versions model versions, allowing detection of tampering or corruption.
 
 - **Access Control**: The Model Registry can implement access control to ensure only authorized proplets can fetch models.
 
