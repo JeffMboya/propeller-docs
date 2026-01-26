@@ -46,7 +46,7 @@ Propeller's FML system is built on a workload-agnostic design where the core orc
 
 3. **Hybrid Communication Pattern**: Components communicate via a mix of HTTP and MQTT. HTTP is used for synchronous operations (task requests, update submission) while MQTT handles orchestration (round start, completion notifications).
 
-4. **WASM-Based Training**: Training workloads execute as WebAssembly modules, providing portability, security isolation, and consistent execution across different device architectures.
+4. **WASM-Based Training**: Training workloads execute as WebAssembly modules.
 
 The following diagram illustrates the architecture and message flow of Propeller's federated learning system:
 
@@ -123,21 +123,21 @@ The Manager is Propeller's core orchestration component. In the context of feder
 
 **Responsibilities**:
 
-- **Experiment Configuration**: The Manager exposes `POST /fl/experiments` to configure FL experiments. It forwards the configuration to the Coordinator via HTTP and then publishes a round start message to MQTT to trigger task distribution.
+- **Experiment Configuration**: The Manager exposes `POST /fl/experiments` to configure FL experiments.
 
-- **Task Creation and Distribution**: When a federated learning round starts, the Manager receives the round start message and creates training tasks for each participating proplet (edge device). Each task is configured with the necessary environment variables (round ID, model URI, hyperparameters) and pinned to a specific proplet.
+- **Task Creation and Distribution**: When a federated learning round starts, the Manager receives the round start message and creates training tasks for each participating proplet (edge device).
 
-- **HTTP Endpoint Proxies**: The Manager provides HTTP endpoints that proxy requests to the Coordinator. These are primarily used by external clients (monitoring systems, test scripts, UI dashboards) rather than proplets:
+- **HTTP Endpoint Proxies**: The Manager provides HTTP endpoints that proxy requests to Coordinator.
   - `GET /fl/task?round_id={id}&proplet_id={id}` - Forward task requests to Coordinator
   - `POST /fl/update` - Forward update submissions to Coordinator (JSON)
   - `POST /fl/update_cbor` - Forward update submissions to Coordinator (CBOR)
   - `GET /fl/rounds/{round_id}/complete` - Check round completion status
 
-**Note**: Proplets communicate directly with the Coordinator's endpoints (not through Manager proxies) when possible, as this reduces latency and eliminates a network hop. Manager proxy endpoints exist to provide a unified API surface for external systems that need to interact with the FL workflow without needing direct Coordinator access.
+**Note**: Proplets communicate directly with the Coordinator's endpoints (not through Manager proxies).
 
-- **Proplet Management**: The Manager maintains awareness of available proplets and their health status, ensuring tasks are only created for active, reachable devices.
+- **Proplet Management**: The Manager maintains awareness of available proplets and their health status.
 
-**Key Design**: Propeller's Manager delegates all FL-specific logic to the external Coordinator. It provides HTTP endpoints as a convenience but does not understand federated learning semantics, model structures, or aggregation logic. This separation allows the Manager to orchestrate other types of distributed workloads beyond federated learning.
+**Key Design**: Propeller's Manager delegates all FL-specific logic to the external Coordinator.
 
 ### FML Coordinator
 
@@ -145,23 +145,23 @@ The Coordinator is the FL-specific service that manages the federated learning l
 
 **Responsibilities**:
 
-- **Experiment Configuration**: The Coordinator receives experiment configuration via HTTP `POST /experiments` from the Manager, initializes round state, and returns the configuration status.
+- **Experiment Configuration**: The Coordinator receives experiment configuration via HTTP `POST /experiments` from the Manager.
 
-- **Task Provisioning**: The Coordinator provides FL task details to proplets via HTTP `GET /task`, including the model reference, hyperparameters, and configuration.
+- **Task Provisioning**: The Coordinator provides FL task details to proplets via HTTP `GET /task`.
 
-- **Update Collection**: The Coordinator receives training updates from proplets via HTTP `POST /update` (JSON) or `POST /update_cbor` (CBOR). Proplets can submit updates directly to the Coordinator without going through the Manager.
+- **Update Collection**: The Coordinator receives training updates from proplets via HTTP `POST /update` (JSON) or `POST /update_cbor` (CBOR).
 
-- **Aggregation Orchestration**: When the minimum number of updates (k-of-n) is received, the Coordinator calls the Aggregator service to perform weighted federated averaging. Each update is weighted by the number of training samples used.
+- **Aggregation Orchestration**: When the minimum number of updates (k-of-n) is received, the Coordinator calls the Aggregator service.
 
-- **Model Versioning**: The Coordinator maintains a version counter for global models, incrementing it each time a new aggregated model is created. This enables tracking of model evolution over multiple training rounds.
+- **Model Versioning**: The Coordinator maintains a version counter for global models, incrementing it each time a new aggregated model is created.
 
 - **Model Storage**: The Coordinator stores aggregated models in the Model Registry via HTTP POST.
 
-- **Round Completion**: The Coordinator handles round completion, either when sufficient updates are received or when a timeout is reached. It publishes completion notifications via MQTT to `fl/rounds/next` topic.
+- **Round Completion**: The Coordinator handles round completion, either when sufficient updates are received or when a timeout is reached.
 
 - **Timeout Handling**: The Coordinator monitors each round for timeouts. If a round doesn't receive sufficient updates within the specified timeout period, it aggregates whatever updates have been received (if any) and completes the round.
 
-**State Management**: The Coordinator maintains round state in memory, with thread-safe access patterns to handle concurrent updates from multiple proplets. Each round has its own mutex to protect its update list while allowing parallel processing of different rounds.
+**State Management**: The Coordinator maintains round state in memory.
 
 ### Aggregator Service
 
@@ -177,18 +177,7 @@ The Aggregator is a dedicated service that performs the mathematical operations 
 
 - **Aggregated Model Generation**: Returns the aggregated model weights to the Coordinator for storage.
 
-**Service Discovery**: The Coordinator discovers the Aggregator service via environment variable configuration. The `AGGREGATOR_URL` environment variable specifies the base URL of the Aggregator service (e.g., `http://aggregator:8080`). This simple configuration approach allows for:
-- Single Aggregator deployment (most common): One Aggregator URL is configured
-- Multiple aggregators (future): Multiple Aggregator URLs can be configured for load balancing or specialized aggregation algorithms
-
-**Algorithm Registration**: The current implementation uses a single Federated Averaging (FedAvg) algorithm. To support pluggable aggregation algorithms, the Coordinator can specify the aggregation algorithm via the experiment configuration:
-- `aggregation_algorithm`: Algorithm identifier (e.g., "fedavg", "fedprox", "fedavgm")
-- `aggregation_params`: Algorithm-specific parameters (e.g., proximal term for FedProx, momentum for FedAvgM)
-
-When the Coordinator receives this configuration, it passes the algorithm identifier and parameters to the Aggregator via the `/aggregate` request. The Aggregator implements a registry pattern where different algorithms are registered and selected based on the identifier. Future extensions can support:
-- Dynamic algorithm registration via a configuration endpoint
-- Algorithm hot-swapping without restarting the Coordinator or Aggregator
-- A/B testing of different aggregation algorithms
+**Service Discovery**: The Coordinator discovers the Aggregator service via environment variable configuration. The `AGGREGATOR_URL` environment variable specifies the base URL of the Aggregator service (e.g., `http://aggregator:8080`).
 
 **Design Separation**: Separating the aggregation logic into its own service allows for pluggable aggregation algorithms (FedAvg, FedProx, etc.) without modifying the Coordinator.
 
@@ -291,7 +280,7 @@ The Proxy service fetches WASM binaries from container registries and serves the
 
 - **Topic Subscription**: Listens to `registry/proplet` topic for binary requests from proplets.
 
-**Benefits**: The Proxy service enables proplets to fetch WASM binaries without requiring direct outbound HTTP access to external registries, which is important for security-constrained environments.
+**Benefits**: The Proxy service enables proplets to fetch WASM binaries without requiring direct outbound HTTP access to external registries.
 
 ### SuperMQ MQTT Infrastructure
 
@@ -646,11 +635,7 @@ Each training round follows this pattern:
 
 ### Incremental Improvement
 
-Each round incrementally improves the model by incorporating knowledge from participating proplets. The federated averaging algorithm ensures that:
-
-- Updates from proplets with more training samples have greater influence on the aggregated model
-- The model converges toward a solution that works well across all participating devices' data distributions
-- No single proplet's data dominates the final model
+Each round incrementally improves the model by incorporating knowledge from participating proplets.
 
 ### Version History
 
@@ -668,7 +653,7 @@ Propeller's FML architecture is designed to scale across several dimensions:
 
 ### Horizontal Scaling
 
-- **Multiple Proplets**: Propeller naturally scales to support hundreds or thousands of proplets participating in a single round. The Manager can create tasks for all participants in parallel.
+- **Multiple Proplets**: Propeller naturally scales to support hundreds or thousands of proplets participating in a single round.
 
 - **Multiple Coordinators**: While Propeller's current implementation uses a single Coordinator, the architecture supports multiple Coordinators with consistent hashing or round assignment to distribute load.
 
@@ -676,19 +661,19 @@ Propeller's FML architecture is designed to scale across several dimensions:
 
 ### Network Efficiency
 
-- **Chunked WASM Transport**: The Proxy service automatically chunks large WASM binaries for efficient MQTT transport, allowing binaries to be distributed even over bandwidth-constrained networks.
+- **Chunked WASM Transport**: The Proxy service chunks large WASM binaries for efficient MQTT transport.
 
-- **HTTP for Large Data**: Model files and aggregated results are transferred via HTTP, which provides efficient streaming and chunked transfer encoding for large payloads.
+- **HTTP for Large Data**: Model files and aggregated results are transferred via HTTP.
 
-- **Asynchronous Communication**: Propeller leverages MQTT's asynchronous nature to allow proplets to submit updates without blocking, and the Coordinator can process updates as they arrive.
+- **Asynchronous Communication**: Proplets can submit updates asynchronously, and the Coordinator processes updates as they arrive.
 
 ### Fault Tolerance
 
-- **Timeout Handling**: Propeller ensures rounds complete even if some proplets fail to submit updates, ensuring progress despite device failures or network issues.
+- **Timeout Handling**: Rounds complete even if some proplets fail to submit updates.
 
-- **Update Thresholds**: The k-of-n parameter allows rounds to complete with a subset of participants, providing resilience to device failures.
+- **Update Thresholds**: The k-of-n parameter allows rounds to complete with a subset of participants.
 
-- **Fallback Mechanisms**: Propeller's proplets can fall back from HTTP to MQTT if network conditions degrade, ensuring updates are delivered even in challenging network environments.
+- **Fallback Mechanisms**: Proplets can fall back from HTTP to MQTT if network conditions degrade.
 
 ### Error Handling
 
@@ -696,37 +681,37 @@ Propeller's FML system implements comprehensive error handling for various failu
 
 **HTTP Endpoint Failures**
 
-- **Coordinator Unavailable**: When the Coordinator is unreachable, the Manager returns a 503 Service Unavailable error to external clients. The Manager does not retry the request; the client is responsible for implementing retry logic with exponential backoff.
+- **Coordinator Unavailable**: When the Coordinator is unreachable, the Manager returns a 503 Service Unavailable error to external clients.
 
-- **Malformed Update Payloads**: When the Coordinator receives a malformed update (invalid JSON, missing required fields, or weight/bias dimensions that don't match the expected model shape), it returns a 400 Bad Request error with a detailed error message. The proplet should validate its update payload before submission and handle 400 responses by logging the error and potentially retraining.
+- **Malformed Update Payloads**: When the Coordinator receives a malformed update (invalid JSON, missing required fields, or weight/bias dimensions that don't match the expected model shape), it returns a 400 Bad Request error.
 
-- **Task Request Errors**: When a proplet requests a task with an invalid round ID or proplet ID, the Coordinator returns a 404 Not Found error. Proplets should validate that they are using the correct round and proplet identifiers before making requests.
+- **Task Request Errors**: When a proplet requests a task with an invalid round ID or proplet ID, the Coordinator returns a 404 Not Found error.
 
-- **Model Registry Unavailable**: When the Model Registry is unavailable, proplets receive a 503 error when attempting to fetch the model. Proplets should implement retry logic with exponential backoff (e.g., 1s, 2s, 4s, 8s) before giving up. The maximum number of retries should be configurable.
+- **Model Registry Unavailable**: When the Model Registry is unavailable, proplets receive a 503 error when attempting to fetch the model.
 
 **Aggregator Service Failures**
 
-- **Aggregator Unavailable**: When the Coordinator attempts to call the Aggregator but the service is unreachable, the Coordinator implements a retry policy with exponential backoff. After 3 failed retry attempts, the Coordinator stores the unaggregated updates for later recovery and completes the round with a warning status. Administrators can manually trigger aggregation once the Aggregator is back online.
+- **Aggregator Unavailable**: When the Coordinator attempts to call the Aggregator but the service is unreachable, the Coordinator implements a retry policy with exponential backoff. After 3 failed retry attempts, the Coordinator stores the unaggregated updates for later recovery and completes the round with a warning status.
 
-- **Aggregation Algorithm Errors**: When the Aggregator encounters an error during aggregation (e.g., mismatched weight dimensions, numerical overflow), it returns a 500 Internal Server Error with details to the Coordinator. The Coordinator logs the error, marks the round as failed, and notifies operators via the monitoring system.
+- **Aggregation Algorithm Errors**: When the Aggregator encounters an error during aggregation (e.g., mismatched weight dimensions, numerical overflow), it returns a 500 Internal Server Error. The Coordinator logs the error and marks the round as failed.
 
-- **Timeout on Aggregation**: The Coordinator sets a timeout (configurable, default 30 seconds) for Aggregator requests. If the Aggregator does not respond within the timeout, the Coordinator treats this as a failure and proceeds with the retry policy.
+- **Timeout on Aggregation**: The Coordinator sets a timeout (configurable, default 30 seconds) for Aggregator requests.
 
 **Proplet Failures**
 
-- **Proplet Timeout**: When a proplet does not submit an update within the round timeout, the Coordinator excludes it from aggregation but continues the round with the remaining participants. The Coordinator logs which proplets timed out for monitoring purposes.
+- **Proplet Timeout**: When a proplet does not submit an update within the round timeout, the Coordinator excludes it from aggregation but continues the round with the remaining participants.
 
-- **Proplet Crash During Training**: If a proplet crashes during WASM execution, it will not submit an update. The round proceeds without that proplet's contribution. The Manager's proplet health monitoring detects the crash and marks the proplet as unhealthy, preventing it from being assigned tasks in subsequent rounds.
+- **Proplet Crash During Training**: If a proplet crashes during WASM execution, it will not submit an update. The round proceeds without that proplet's contribution.
 
-- **WASM Execution Errors**: If the WASM module encounters an error during training (e.g., division by zero, out of memory), the proplet captures the error and reports it to the Coordinator via a special error update message. The Coordinator logs the error and excludes the proplet from the round.
+- **WASM Execution Errors**: If the WASM module encounters an error during training (e.g., division by zero, out of memory), the proplet reports it to the Coordinator via a special error update message. The Coordinator logs the error and excludes the proplet from the round.
 
 **Network-Related Failures**
 
-- **HTTP to MQTT Fallback**: Proplets prefer HTTP for update submission but fall back to MQTT if HTTP fails. The fallback is triggered after 3 consecutive HTTP failures with exponential backoff. Once MQTT is used, the proplet continues to use MQTT for the remainder of the round.
+- **HTTP to MQTT Fallback**: Proplets prefer HTTP for update submission but fall back to MQTT if HTTP fails. The fallback is triggered after 3 consecutive HTTP failures.
 
-- **MQTT Connection Loss**: If a proplet loses its MQTT connection during a round, it attempts to reconnect. If reconnection fails after 5 attempts, the proplet marks itself as unhealthy and stops participating in the round.
+- **MQTT Connection Loss**: If a proplet loses its MQTT connection during a round, it attempts to reconnect. If reconnection fails after 5 attempts, the proplet marks itself as unhealthy.
 
-- **Partial Update Transmission**: If an update transmission is interrupted (e.g., network cut during HTTP POST), the Coordinator treats this as a failed submission and waits for a retry from the proplet. Proplets implement client-side retries for failed submissions.
+- **Partial Update Transmission**: If an update transmission is interrupted (e.g., network cut during HTTP POST), the Coordinator treats this as a failed submission and waits for a retry from the proplet.
 
 ## Security and Privacy
 
