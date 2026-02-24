@@ -128,10 +128,11 @@ export PROXY_AUTHENTICATE="TRUE"
 export PROXY_REGISTRY_USERNAME="<your_docker_username>"
 export PROXY_REGISTRY_PASSWORD="<your_docker_password>"
 
-# MQTT Configuration
-export PROPLET_THING_KEY="<secret>"
-export PROPLET_THING_ID="<proplet_id>"
-export PROPLET_CHANNEL_ID="<channel_id>"
+# MQTT / SuperMQ Configuration
+export PROXY_DOMAIN_ID="<domain_id>"
+export PROXY_CHANNEL_ID="<channel_id>"
+export PROXY_CLIENT_ID="<client_id>"
+export PROXY_CLIENT_KEY="<client_key>"
 ```
 
 ### Authentication

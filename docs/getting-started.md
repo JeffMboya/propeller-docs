@@ -25,9 +25,7 @@ cd propeller
 
 ## Build and Install the Artifacts
 
-To install the Magistrala CLI, follow the [instructions](https://docs.magistrala.abstractmachines.fr/getting-started/#step-2-install-the-cli).
-
-This step compiles all Propeller components (manager, proplet, CLI, proxy, and example WASM modules).
+This step compiles all Propeller components (manager, CLI, proxy, proplet, and example WASM modules).
 Run the following:
 
 ```bash
@@ -51,27 +49,35 @@ Run `make install` again afterward.
 
 ### What the build process does
 
-During the build, you will see output similar to:
+`make all` builds three categories of artifacts:
+
+**Go services** (manager, cli, proxy):
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ... -o build/manager cmd/manager/main.go
-CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ... -o build/proplet cmd/proplet/main.go
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ... -o build/cli cmd/cli/main.go
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ... -o build/proxy cmd/proxy/main.go
-
-GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/addition.wasm     -target wasip1 examples/addition/addition.go
-GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/compute.wasm      -target wasip1 examples/compute/compute.go
-GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/hello-world.wasm  -target wasip1 examples/hello-world/hello-world.go
 ```
 
-This means:
+**Rust proplet** (built with Cargo):
 
-* All Go binaries were built and placed into `build/`
-* All example WASM modules were built using TinyGo into `build/`
+```bash
+cd proplet && cargo build --release && cp target/release/proplet ../build
+```
+
+**Example WASM modules** (built with TinyGo):
+
+```bash
+GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/addition.wasm    -target wasip1 examples/addition/addition.go
+GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/compute.wasm     -target wasip1 examples/compute/compute.go
+GOOS=js GOARCH=wasm tinygo build -buildmode=c-shared -o build/hello-world.wasm -target wasip1 examples/hello-world/hello-world.go
+```
+
+After the build, the `build/` directory contains all binaries and WASM modules.
 
 ### Installing the artifacts
 
-`make install` copies the compiled binaries into your `$GOBIN` directory so you can run them directly from your terminal:
+`make install` copies all non-WASM binaries from `build/` into your `$GOBIN` directory with a `propeller-` prefix, so you can run them directly from your terminal:
 
 ```bash
 cp build/cli      $GOBIN/propeller-cli
@@ -300,7 +306,7 @@ propeller-cli provision
 
 This command will:
 
-* Log you into SuperMQ (you must have a SuperMQ user already created; if not, create one using the [supermq-cli](https://docs.supermq.abstractmachines.fr/cli#create-user), `curl`, or the web UI).
+* Log you into SuperMQ (you must have a SuperMQ user already created; if not, create one using the SuperMQ CLI, `curl`, or the SuperMQ web UI).
 * Create a **domain**
 * Log your user into that domain
 * Create a **manager client**

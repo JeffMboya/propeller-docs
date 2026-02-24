@@ -15,7 +15,8 @@ cd $SOMEPATH/propeller
 
 To build Propeller, you will need the following:
 
-- [A Go compiler (Go 1.23 or later)](https://go.dev/doc/install)
+- [A Go compiler (Go 1.25.5 or later)](https://go.dev/doc/install)
+- [rustup](https://rustup.rs/) — installs the Rust toolchain and `cargo`, required for the Rust proplet
 - [Make](https://www.gnu.org/software/make/manual/make.html)
 - [Docker](https://docs.docker.com/)
 - [Wasmtime](https://wasmtime.dev/)
@@ -56,6 +57,14 @@ make manager
 
 The built binaries will be located in the `build` directory.
 
+The Rust proplet is built separately. Use:
+
+```bash
+make proplet
+```
+
+This runs `cargo build --release` inside the `proplet` directory and copies the resulting binary to `build/proplet`.
+
 ### Building examples
 
 You can build examples using the following:
@@ -95,6 +104,20 @@ make install
 ```
 
 This will install Propeller to the `GOBIN` directory.
+
+## Testing
+
+To run the Go service tests:
+
+```bash
+make test
+```
+
+To run all tests, including the Rust proplet test suite:
+
+```bash
+make test-all
+```
 
 ## Linter
 

@@ -13,6 +13,9 @@
 - 🔧 **WAMR on Zephyr RTOS**: Deploy lightweight Wasm workloads on constrained devices running Zephyr RTOS via the WebAssembly Micro Runtime (WAMR).
 - 🛠️ **Powerful Service Mesh**: Integrates with **[SuperMQ](https://docs.supermq.abstractmachines.fr/)** for secure, efficient IoT device communication.
 - 🔒 **Security at the Core**: Propeller ensures secure workload execution and communication for IoT environments.
+- 🔁 **Job Orchestration**: Group tasks into jobs with parallel, sequential, or configurable execution modes.
+- 🧠 **Federated Learning**: Orchestrate federated learning experiments across distributed proplets via the Manager's FL API.
+- 📊 **Process Monitoring**: Collect per-task OS-level metrics (CPU, memory, disk I/O, network) and publish them over MQTT.
 
 ---
 

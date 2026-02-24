@@ -7,8 +7,8 @@ The Propeller system is a distributed computing platform designed to manage and 
 1. **CLI**: Command Line Interface for interacting with the Propeller system.
 2. **Manager**: Central service responsible for task management and proplet coordination.
 3. **Proplet**: Worker nodes that execute tasks.
-4. **Proxy**: Service for fetching and distributing container images from a registry.
-5. **SuperMQ**: Internal Event Driven Infrastructure for creation and coommunication between services.
+4. **Proxy**: Service for fetching and distributing WebAssembly binaries from an OCI registry to proplets.
+5. **SuperMQ**: Internal Event Driven Infrastructure for creation and communication between services.
 
 ![Systme Architecture](images/architecture.png)
 
@@ -20,11 +20,15 @@ The CLI provides a command-line interface for users to interact with the Propell
 
 ### Manager
 
-The Manager is the central service responsible for managing tasks and coordinating proplets. It handles task creation, updates, deletion, and execution and maintains an internal database for tracking tasks and proplets. It also manages the lifecycle of proplets and ensures they are alive and healthy. The Manager uses MQTT for communication between services. It exposes REST endpoints for task management and proplet coordination. Currently, the system supports **1 manager : multiple workers**. In the future, the system will be expanded to support **multiple managers : multiple workers**.
+The Manager is the central service responsible for managing tasks and coordinating proplets. It handles task creation, updates, deletion, and execution and maintains an internal database for tracking tasks and proplets. It also manages the lifecycle of proplets and ensures they are alive and healthy. The Manager uses MQTT for communication between services and exposes REST endpoints for task management and proplet coordination.
+
+Beyond individual tasks, the Manager supports **jobs** (groups of tasks run with parallel, sequential, or configurable execution modes), **workflows** (DAG-ordered task sets with `depends_on` and `run_if` fields), **cron scheduling** (tasks with a `schedule` field are automatically started at the configured time), and **federated learning orchestration** (proxying FL experiment configuration to an external FL Coordinator service).
+
+Currently, the system supports **1 manager : multiple workers**. In the future, the system will be expanded to support **multiple managers : multiple workers**.
 
 ### Proplet
 
-Proplets are worker nodes that execute tasks. They receive tasks from the Manager, execute them, and report the results back. Proplets also send periodic liveliness updates to the Manager to indicate they are alive.
+Proplets are worker nodes that execute WebAssembly tasks. The primary proplet implementation is written in Rust and uses an embedded Wasmtime runtime. Proplets receive start and stop commands from the Manager over MQTT, fetch WebAssembly binaries from the Proxy in chunks, execute them, and publish results back over MQTT. Proplets send periodic heartbeat messages to the Manager to indicate they are alive, and register a Last Will message with the MQTT broker so the Manager is notified of unexpected disconnections.
 
 ### Proxy
 

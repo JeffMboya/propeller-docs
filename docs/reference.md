@@ -1,264 +1,137 @@
-# Process Monitoring Implementation
+# Reference
 
-This document describes the complete process monitoring implementation for Rust proplets in the Propeller distributed task execution system.
+This page provides a quick reference for the Propeller CLI and the core data models used throughout the system.
 
-## Overview
+## CLI Reference
 
-Comprehensive OS-level process monitoring has been implemented for:
+The `propeller-cli` binary is installed to `GOBIN` by `make install`. All commands communicate with the Manager over HTTP.
 
-- Rust Proplet - Using `sysinfo` crate for cross-platform metrics
-- Manager - Ready for integration (metrics aggregation and visualization)
+### Global Flags
 
-## Monitoring Profiles
+| Flag                     | Short | Default                   | Description                                |
+| ------------------------ | ----- | ------------------------- | ------------------------------------------ |
+| `--manager-url`          | `-m`  | `http://localhost:7070`   | URL of the Manager HTTP API.               |
+| `--tls-verification`     | `-v`  | —                         | Enable TLS certificate verification.       |
+| `--users-url`            | `-u`  | `http://localhost:9002`   | SuperMQ users service URL.                 |
+| `--domains-url`          | `-d`  | `http://localhost:9003`   | SuperMQ domains service URL.               |
+| `--clients-url`          | `-c`  | `http://localhost:9006`   | SuperMQ clients service URL.               |
+| `--channels-url`         | `-z`  | `http://localhost:9005`   | SuperMQ channels service URL.              |
+| `--content-type`         | `-t`  | —                         | HTTP Content-Type header value.            |
 
-Profiles define which metrics to collect, how often, and how much history to retain.
-
-The Rust implementation provides two built-in profiles:
-
-| Profile             | Interval | Metrics | Export | History | Use Case            |
-| ------------------- | -------- | ------- | ------ | ------- | ------------------- |
-| Standard            | 10s      | All     | Yes    | 100     | General purpose     |
-| Long-running Daemon | 120s     | All     | Yes    | 500     | Background services |
-
-### Custom Profiles
-
-You can also define custom monitoring profiles via JSON configuration with the following options:
-
-- `enabled`: Enable/disable monitoring (default: `true`)
-- `interval`: Collection interval in seconds (default: `10`)
-- `collect_cpu`: Collect CPU metrics (default: `true`)
-- `collect_memory`: Collect memory metrics (default: `true`)
-- `collect_disk_io`: Collect disk I/O metrics (default: `true`)
-- `collect_threads`: Collect thread count (default: `true`)
-- `collect_file_descriptors`: Collect file descriptor count (default: `true`)
-- `export_to_mqtt`: Publish metrics to MQTT (default: `true`)
-- `retain_history`: Keep metrics history (default: `true`)
-- `history_size`: Maximum history entries (default: `100`)
-
-## Metrics Collected
-
-### Common Metrics (All Platforms)
-
-- CPU usage percentage
-- Memory usage (bytes and percentage)
-- Disk I/O (read/write bytes)
-- Network I/O (rx/tx bytes)
-- Process uptime
-
-### Platform-Specific Metrics
-
-| Metric                | Linux | macOS | Windows |
-| --------------------- | ----- | ----- | ------- |
-| Thread Count          | ✓     | ✓     | Limited |
-| File Descriptors      | ✓     | ✓     | ✗       |
-| Detailed Memory Stats | ✓     | ✓     | ✓       |
-
-## MQTT Topics
-
-### Proplet-Level Metrics
-
-````txt
-m/{domain_id}/c/{channel_id}/control/proplet/metrics
-
-Publishes overall proplet health metrics.
-
-### Task-Level Metrics
-
-```txt
-m/{domain_id}/c/{channel_id}/control/proplet/task_metrics
-m/{domain_id}/c/{channel_id}/metrics/proplet
-````
-
-Publishes per-task process metrics.
-
-## Message Format
-
-```json
-{
-  "task_id": "uuid",
-  "proplet_id": "uuid",
-  "metrics": {
-    "cpu_percent": 42.5,
-    "memory_bytes": 67108864,
-    "memory_percent": 1.5,
-    "disk_read_bytes": 1048576,
-    "disk_write_bytes": 524288,
-    "network_rx_bytes": 4096,
-    "network_tx_bytes": 8192,
-    "uptime_seconds": 120,
-    "thread_count": 4,
-    "file_descriptor_count": 12,
-    "timestamp": "2025-01-15T10:30:00.000Z"
-  },
-  "aggregated": {
-    "avg_cpu_usage": 38.2,
-    "max_cpu_usage": 65.0,
-    "avg_memory_usage": 62914560,
-    "max_memory_usage": 71303168,
-    "total_disk_read": 2097152,
-    "total_disk_write": 1048576,
-    "total_network_rx": 12288,
-    "total_network_tx": 24576,
-    "sample_count": 24
-  }
-}
-```
-
-## Configuration
-
-### Rust Proplet Environment Variables
+### Tasks
 
 ```bash
-export PROPLET_ENABLE_MONITORING=true     # Enable/disable monitoring (default: true)
-export PROPLET_METRICS_INTERVAL=10        # Proplet-level metrics interval in seconds (default: 10)
+propeller-cli tasks create <name> [--cli-args <args>]
+propeller-cli tasks view   <id>
+propeller-cli tasks update <id>
+propeller-cli tasks delete <id>
+propeller-cli tasks start  <id>
+propeller-cli tasks stop   <id>
+propeller-cli tasks        [--offset <n>] [--limit <n>]   # list all tasks
 ```
 
-### Per-Task Configuration (JSON)
+| Flag       | Short | Default | Description                      |
+| ---------- | ----- | ------- | -------------------------------- |
+| `--offset` | `-o`  | `0`     | Pagination offset for list.      |
+| `--limit`  | `-l`  | `100`   | Maximum results to return.       |
 
-```json
-{
-  "monitoring_profile": {
-    "enabled": true,
-    "interval": 5000000000,
-    "collect_cpu": true,
-    "collect_memory": true,
-    "collect_disk_io": true,
-    "collect_network_io": true,
-    "collect_threads": true,
-    "collect_file_descriptors": true,
-    "export_to_mqtt": true,
-    "retain_history": true,
-    "history_size": 200
-  }
-}
-```
+### Provision
 
-## Performance Impact
+The `provision` command runs an interactive TUI-based wizard that:
 
-Measured overhead across platforms:
-
-| Profile   | CPU Overhead | Memory Overhead |
-| --------- | ------------ | --------------- |
-| Minimal   | < 0.1%       | ~1 MB           |
-| Standard  | < 0.5%       | ~2 MB           |
-| Intensive | < 2%         | ~5 MB           |
-
-## Usage Examples
-
-```go
-task := task.Task{
-    ID:       "task-123",
-    Name:     "compute",
-    ImageURL: "registry.example.com/compute:v1",
-    Daemon:   false,
-    MonitoringProfile: &monitoring.StandardProfile(),
-}
-```
-
-### Rust - Start Task with Monitoring
-
-```json
-{
-  "id": "550e8400-e29b-41d4-a716-446655440001",
-  "functionName": "compute",
-  "imageURL": "registry.example.com/compute:v1",
-  "daemon": false,
-  "monitoringProfile": {
-    "enabled": true,
-    "interval": 10,
-    "collect_cpu": true,
-    "collect_memory": true,
-    "export_to_mqtt": true,
-    "retain_history": true,
-    "history_size": 100
-  }
-}
-```
-
-## Integration with Monitoring Systems
-
-### Prometheus
-
-Use MQTT-to-Prometheus exporter:
-
-```yaml
-scrape_configs:
-  - job_name: "propeller"
-    static_configs:
-      - targets: ["mqtt-exporter:9641"]
-```
-
-### Grafana
-
-Create dashboards with:
-
-- CPU usage over time
-- Memory consumption trends
-- Disk/Network I/O rates
-- Per-task resource usage
-
-### Custom Monitoring
-
-Subscribe to MQTT topics:
+1. Creates a SuperMQ domain.
+2. Creates a Manager client and N proplet clients.
+3. Creates a channel and connects all clients to it.
+4. Writes the resulting credentials to a `config.toml` file.
 
 ```bash
-mosquitto_sub -h localhost -t "m/+/c/+/*/metrics" -v
+propeller-cli provision [--file-name <path>]
 ```
 
-## Testing
+| Flag          | Short | Default       | Description                              |
+| ------------- | ----- | ------------- | ---------------------------------------- |
+| `--file-name` | `-f`  | `config.toml` | Output path for the generated config.    |
 
-### Manual Test
+---
 
-```bash
-# Start proplet
-./build/proplet
+## Data Models
 
-# Submit a task
-curl -X POST http://localhost:8080/tasks \
-  -H "Content-Type: application/json" \
-  -d '{
-    "id": "test-123",
-    "name": "compute",
-    "file": "...",
-    "monitoring_profile": {
-      "enabled": true,
-      "interval": 5000000000,
-      "export_to_mqtt": true
-    }
-  }'
+### Task
 
-# Monitor metrics
-mosquitto_sub -h localhost -t "m/+/c/+/*/metrics" -v
-```
+| Field                | Type            | Description                                                                 |
+| -------------------- | --------------- | --------------------------------------------------------------------------- |
+| `id`                 | string (UUID)   | Unique task identifier. Assigned by the Manager on creation.                |
+| `name`               | string          | Human-readable task name.                                                   |
+| `kind`               | string          | Task kind: `standard` or `federated`.                                       |
+| `state`              | integer         | Current execution state (see Task States below).                            |
+| `image_url`          | string          | OCI image reference for the Wasm binary (e.g. `docker.io/myorg/app:v1`).   |
+| `file`               | string          | Path or identifier of a directly uploaded `.wasm` file.                     |
+| `cli_args`           | array of string | Arguments passed to the Wasm runtime (e.g. `["--invoke", "add"]`).         |
+| `inputs`             | array           | Numeric inputs forwarded to the Wasm function.                              |
+| `env`                | object          | Environment variables injected into the Wasm execution context.             |
+| `daemon`             | boolean         | If `true`, the task runs continuously until explicitly stopped.             |
+| `encrypted`          | boolean         | If `true`, the Wasm binary is encrypted and requires a TEE for decryption.  |
+| `kbs_resource_path`  | string          | KBS resource path used to fetch the decryption key for an encrypted task.   |
+| `proplet_id`         | string (UUID)   | Pin execution to a specific proplet, bypassing the round-robin scheduler.   |
+| `depends_on`         | array of string | IDs of tasks that must complete before this task starts (workflow DAG).     |
+| `run_if`             | string          | Condition for execution: `success`, `failure`, or `always`.                 |
+| `workflow_id`        | string (UUID)   | ID of the workflow this task belongs to.                                    |
+| `job_id`             | string (UUID)   | ID of the job this task belongs to.                                         |
+| `results`            | any             | Output stored after the task completes successfully.                        |
+| `error`              | string          | Error message if the task failed.                                           |
+| `monitoring_profile` | object          | Per-task monitoring configuration (see monitoring.md).                      |
+| `schedule`           | string          | Cron expression for recurring execution (e.g. `"0 * * * *"`).              |
+| `timezone`           | string          | Timezone for cron schedule evaluation (default: `UTC`).                     |
+| `is_recurring`       | boolean         | `true` if a `schedule` is set.                                              |
+| `next_run`           | timestamp       | Computed time of the next scheduled execution.                              |
+| `priority`           | integer         | Task priority hint for the scheduler.                                       |
+| `mode`               | string          | Federated learning mode: `infer` or `train`.                                |
+| `start_time`         | timestamp       | Time the task started executing.                                            |
+| `finish_time`        | timestamp       | Time the task completed or failed.                                          |
+| `created_at`         | timestamp       | Time the task was created.                                                  |
+| `updated_at`         | timestamp       | Time the task was last updated.                                             |
 
-## Future Enhancements
+#### Task States
 
-1. Manager Integration
-   - Aggregate metrics from all proplets
-   - Historical metrics storage
-   - Metrics API endpoints
-   - Alerting on anomalies
+| Value | Name          | Description                                      |
+| ----- | ------------- | ------------------------------------------------ |
+| `0`   | `Pending`     | Task created, not yet started.                   |
+| `1`   | `Scheduled`   | Task assigned to a proplet.                      |
+| `2`   | `Running`     | Task is executing on a proplet.                  |
+| `3`   | `Completed`   | Task finished successfully.                      |
+| `4`   | `Failed`      | Task encountered an error.                       |
+| `5`   | `Skipped`     | Task was skipped (e.g. dependency condition not met). |
+| `6`   | `Interrupted` | Task was stopped externally.                     |
 
-2. Advanced Metrics
-   - GPU usage (if available)
-   - Container-specific metrics (cgroups)
-   - Custom application metrics
-   - Distributed tracing correlation
+---
 
-3. Optimization
-   - Adaptive sampling rates
-   - Metric compression
-   - Batched MQTT publishing
-   - Metrics rollups/aggregation
+### Job
 
-4. Visualization
-   - Built-in dashboards
-   - Real-time metric streaming
-   - Historical trend analysis
-   - Anomaly detection
+| Field            | Type          | Description                                                                |
+| ---------------- | ------------- | -------------------------------------------------------------------------- |
+| `id`             | string (UUID) | Unique job identifier.                                                     |
+| `name`           | string        | Human-readable job name.                                                   |
+| `execution_mode` | string        | `parallel`, `sequential`, or `configurable`.                               |
+| `tasks`          | array         | List of task objects belonging to this job.                                |
+| `created_at`     | timestamp     | Time the job was created.                                                  |
+| `updated_at`     | timestamp     | Time the job was last updated.                                             |
 
-## References
+#### Job Execution Modes
 
-- Rust Implementation: `proplet-rs/src/monitoring/`
-- Examples: `examples/monitoring-example.md`
-- Rust Docs: `proplet-rs/MONITORING.md`
+| Mode           | Description                                                                                   |
+| -------------- | --------------------------------------------------------------------------------------------- |
+| `parallel`     | All tasks in the job start simultaneously.                                                    |
+| `sequential`   | Tasks start one at a time in order. A task failure stops the job (fail-fast).                |
+| `configurable` | Execution mode is read from the `JOB_EXECUTION_MODE` environment variable at runtime.        |
+
+---
+
+### Proplet
+
+| Field           | Type            | Description                                                     |
+| --------------- | --------------- | --------------------------------------------------------------- |
+| `id`            | string (UUID)   | Unique proplet identifier, set by the proplet on startup.       |
+| `name`          | string          | Human-readable proplet name.                                    |
+| `task_count`    | integer         | Number of tasks currently running on this proplet.              |
+| `alive`         | boolean         | `true` if the most recent heartbeat was within the last 10 s.   |
+| `alive_history` | array           | Last 10 heartbeat timestamps recorded by the Manager.           |
